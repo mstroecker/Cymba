@@ -134,7 +134,7 @@ which are in the case.
 |---|---|---|
 | 0 | Unknown | |
 | 1 | A pod is in an ear; which one: [Which pod sent it](#which-pod-sent-it) | LibrePods' Linux parser |
-| 2 | Both pods are in the case | LibrePods' Linux parser; Pro 3, 2026-10-25, #71 |
+| 2 | Both pods are in the case; exception below | LibrePods' Linux parser; Pro 3, 2026-10-25, #71 |
 | 3 | The other pod's in-ear bit; see bit 1 | LibrePods' Linux parser |
 | 4 | One pod is in the case and the other out, set by both pods; exceptions below | LibrePods' Linux parser; Pro 3, 2026-10-25, #71; Pro 3, 2026-11-07, #184 |
 | 5 | The sending pod: `1` left, `0` right | LibrePods' Linux parser; Pro 3, #71 and #142 |
@@ -144,6 +144,9 @@ which are in the case.
 What the #71 captures (Pro 3, 2026-10-25) showed of bits 2, 4 and 6:
 
 - **Bit 2:** with both pods in the case, every advertisement from either pod has it.
+  The left pod's `0x24` set it too, in the case around the lid opening with the right
+  pod worn (Pro 3, 2026-11-07, #184; [Runs](#the-184-run)): what it means there is an
+  [open question](#open-questions).
 - **Bit 6:** with one pod in the case and the other worn, the pod in the case sets it.
   Not every pod in the case sets it: with both inside, only one pod at a time did.
 - **Out of the case or in ears,** neither bit 2 nor bit 6 is set.
@@ -307,7 +310,7 @@ tries: [app/identification.md](../../app/identification.md#what-counts).
 | 1 | Sending pod: bit 7 charging, bits 0-6 the level | Levels: both models, 2026-09-09/10; which pod: Pro 3, 2026-10-25, #71 |
 | 2 | Other pod: bit 7 charging, bits 0-6 the level | Levels: both models, 2026-09-09/10; which pod: Pro 3, 2026-10-25, #71 |
 | 3 | Case: bit 7 charging, bits 0-6 the level | Both models, 2026-09-09/10 |
-| 4-6 | The last three bytes of the address of the host the pods last used, connected or not | Pro 3, 2026-10-25, #71 |
+| 4-6 | The last three bytes of a host's address: the host last used or the host connected is [open](#open-questions) | Pro 3, 2026-10-25, #71 |
 | 7-9 | The last three bytes of the pair's real MAC, or `00 00 00` unless both pods are in the case | Both models, 2026-09-09/10; Pro 3, #71 |
 | 10 | Unknown; `00` in every sample | Both models, 2026-09-09/10 |
 | 11 | Counts up slowly | Pro 3, 2026-10-25, #71 |
@@ -316,8 +319,9 @@ tries: [app/identification.md](../../app/identification.md#what-counts).
 - **Byte 0** equaled cleartext byte 8 in all 111 payloads of the second #71 capture:
   `00`, `04` and `08`. The September samples carry `0x10` on top on the Pro 3, and the
   first #71 capture a `0x40`.
-- **Bytes 4-6** name the host the pods page. They changed when this host connected,
-  and changed back 1.4 s after it disconnected (first #71 capture).
+- **Bytes 4-6** changed when this host connected, and changed back 1.4 s after it
+  disconnected (first #71 capture). Which host they name is
+  [open](#open-questions).
 - **A level above 100** means the part is unavailable: with both pods worn, the
   decrypted case byte was `0xff` beside the cleartext case nibble `0xF` (Pro 3,
   2026-09-11, 17f6591).
@@ -340,7 +344,7 @@ useful: the payload carries its own device's address, so a match says the key it
 decrypted with is that device's.
 
 **Out of the case, the suffix is zeroed.** Unless both pods are in the case (status
-bit 2), the pods send `00 00 00` in bytes 7-9, whether a host is connected or not. The
+bit 2, which has an exception that is [open](#open-questions)), the pods send `00 00 00` in bytes 7-9, whether a host is connected or not. The
 suffix went to zero with the first advertisement from out of the case, and came back
 about 0.1 s after bit 2 when the pods went back in (Pro 3, 2026-10-25, #71). It was
 first seen on a Pro 3 connected and out of the case, the rest of the plaintext intact
@@ -360,7 +364,7 @@ this is the only check of the plaintext needed.
 of byte 0's upper nibble clear and byte 4 == `0x2D`. Neither model tested here produces
 it (2026-09-10, 1a7c66d):
 
-- byte 4 is part of the last host's address, whatever that host's address is;
+- byte 4 is part of a host's address, whatever that host's address is;
 - byte 0 follows the connection state, with `0x10` on top in the Pro 3 samples.
 
 A magic-byte check therefore rejects *correct* decryptions, which leaves every pair
@@ -475,12 +479,12 @@ Pro 2 (USB-C) (0x2024), real MAC 11:22:33:44:55:66
    ^^ ^^ ^^ ^^ ^^ ^^ ^^^^^^^^^^ ^^^^^
    |        |        |          bytes 10-11
    |        |        MAC suffix
-   |        last host
+   |        a host
    batteries
 ```
 
 - Within one device, only bytes 1-3 (batteries) and 12-15 change between these samples.
-- Bytes 4-6 are the same for both models because both had last used the same host.
+- Bytes 4-6 are the same for both models: both named the same host.
 - The suffix matched the real MAC on every sample with both pods in the case.
 - The `0x2D` marker at byte 4 was not seen on either model.
 - The cleartext `0x51`/`0x59` lid vectors of that month, from the Pro 3, all have the
@@ -494,7 +498,7 @@ intact:
    ^^ ^^ ^^ ^^ ^^ ^^ ^^^^^^^^^^ ^^^^^
    |        |        |          bytes 10-11
    |        |        zeroed suffix
-   |        last host
+   |        a host
    batteries
 ```
 
@@ -585,6 +589,10 @@ advertise, then taken out again.
 - Byte 8: what `0x08` and `0x0c` mean during connection setup.
 - Decrypted byte 0: what its high bits (`0x10`, `0x40`) mean. Do not validate against
   it.
+- Decrypted bytes 4-6: the byte order in which they carry the host's address, and
+  whether they name the host last used or the host connected: in capture 1 of #71 they
+  changed back 1.4 s after this host disconnected, while in capture 2 they named this
+  host in every payload, connected or not.
 - Decrypted byte 10: unknown; `00` in every sample.
 - Decrypted byte 11: what it counts.
 - Decrypted bytes 12-15: unknown; they change whenever the payload does, and may be a
@@ -601,7 +609,10 @@ advertise, then taken out again.
   [app/identification.md](../../app/identification.md#hardware-checks).
 - Byte 4: why the left pod sent `f` for the right pod's level in `24 f5`, around the
   lid opening, while the right pod was worn at 80% (Pro 3, 2026-11-07, #184). Status
-  `0x24` also sets bit 2, both pods in the case, and leaves bit 4 clear.
+  `0x24` also sets bit 2 and leaves bit 4 clear.
+- Status bit 2 set with a pod out of the case: the left pod's `0x24`, in the case around
+  the lid opening, with the right pod worn (Pro 3, 2026-11-07, #184). What bit 2 means
+  there is open.
 - Why each pod's payload changed once about 2 s after discovery started (Pro 3,
   2026-11-02, #153). Under an advertisement monitor, with no active scan, the payloads
   changed within 0.5 s of each pod being first heard, one of them twice; under discovery

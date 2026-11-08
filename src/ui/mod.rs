@@ -10,7 +10,8 @@
 //! back the same way (`connect`), and a failure of the window's own press
 //! goes to a toast; the connects under way are followed there too. Low battery notifications
 //! are worked out from the same snapshots on the tokio side, by
-//! `crate::notify`, and come to the main context to be sent.
+//! `crate::notify`, and nearby ones by `crate::nearby`, and come to the main
+//! context to be sent.
 //!
 //! The controls, and the labels a test reads, carry an ID set with
 //! `set_widget_name`, for the test harness (#74) to find them by; `automation`
@@ -39,7 +40,7 @@ mod window;
 pub use automation::register as register_automation;
 pub use connect::{Connecting, add_action as add_connect};
 pub use media::add_action as add_pause_on_ear;
-pub use notifications::deliver as deliver_notifications;
+pub use notifications::{deliver as deliver_notifications, deliver_nearby};
 pub use window::activate;
 
 /// Anything heard within this long counts as advertising now.

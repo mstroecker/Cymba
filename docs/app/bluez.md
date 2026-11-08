@@ -29,6 +29,13 @@ So `watch_adapters` turns what it hears into `AdapterSet` tokens, each tied to t
 bluetoothd instance it was read from. A consumer starts again when the token changes,
 never on a single signal.
 
+**Each adapter's `Address` comes with it,** from the same `GetManagedObjects` reply and
+`InterfacesAdded` signal, with no call of its own: this computer's addresses for the
+nearby notification ([nearby.md](nearby.md#when-the-pods-say-they-will-not-come)).
+`AdapterSet::addresses` has them while BlueZ is on the bus and every adapter's address
+reads. An address is read only there: a `PropertiesChanged` of an adapter's `Address`
+is not followed, and the address it had stands until the adapters are read again.
+
 ## Listening for the pods
 
 **An advertisement monitor first, discovery where there is none** (#189). Discovery that
@@ -324,10 +331,11 @@ nothing starts ([Listening for the pods](#listening-for-the-pods)).
 
 ## Tasks that never give up
 
-The tasks on the system bus, `ble_task` and `attachment::run`, never return for good
-(#50). They set themselves up again after `bluez::Backoff`, which counts a run shorter than
+The tasks on the system bus, `ble_task`, `attachment::run` and `presence::run`, never
+return for good (#50). They set themselves up again after `bluez::Backoff`, which counts a run shorter than
 `bluez::RETRY_MAX` as a failure, so a connection that dies at once is not retried in a
-loop. Each used to give up at its first error, and the app stayed deaf until restarted.
+loop. `ble_task` and `attachment::run` each used to give up at its first error, and the
+app stayed deaf until restarted.
 
 `volume::Volume` and `media::Media` have no such loop: they connect when a call needs it,
 and again after a connection failed.

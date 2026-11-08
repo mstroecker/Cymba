@@ -122,7 +122,7 @@ Bluetooth panel, still blocks, are left to the user document
 
 **A second stream, not part of the snapshot.** The scanner's state is no pair's state,
 and the window alone reads it. Carried in the snapshot, every change would wake the tray,
-attachment and the notifier for nothing, and the coordinator would hold state it does
+attachment and the notifiers for nothing, and the coordinator would hold state it does
 not merge. So the window follows `ScanControl::state` as it follows the snapshots, with
 the same loop, and the harness's `Settle` waits for both.
 
@@ -159,9 +159,10 @@ action's state:
 | Preferences switch | Action | Setting | Document |
 |---|---|---|---|
 | Battery notifications | `app.battery-notifications` | `Settings::battery_notifications` | [notifications.md](notifications.md#the-switch) |
+| Nearby notifications | `app.nearby-notifications` | `Settings::nearby_notifications` | [nearby.md](nearby.md#the-switch) |
 | Pause when a pod is taken out | `app.pause-on-ear` | `Settings::pause_on_ear` | [media-pause.md](media-pause.md) |
 
-Both are on by default, also for a file from before the setting.
+Each is on by default, also for a file from before the setting.
 
 **Kept in `~/.config/cymba/settings.json`,** a file rather than GSettings: a GSettings
 schema has to be compiled and installed wherever the app runs, and GIO aborts the process

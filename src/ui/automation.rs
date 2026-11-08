@@ -88,6 +88,7 @@
 //! | `preferences` | the Preferences dialog, while open |
 //! | `auto-connect` | its switch, always insensitive |
 //! | `battery-notifications` | its switch for low battery notifications, as saved: on unless turned off |
+//! | `nearby-notifications` | its switch for nearby notifications, as saved: on unless turned off |
 //! | `pause-on-ear` | its switch for pausing the media when a pod leaves an ear, as saved: on unless turned off |
 //! | `scan-hint` | the scanning hint's group, at the top of Preferences: visible while a powered adapter listens by discovery |
 //! | `scan-pause-row` | its row; the title is `Scanning`, or `Paused until` and the local time the pause ends |
@@ -172,10 +173,13 @@
 //! `Notifications` returns a JSON array of what the app has done with its
 //! notifications since automation was registered, oldest first. A
 //! notification sent is `{"action": "send", "id", "title", "body",
-//! "priority"}`, `priority` being `normal` or `high`; one withdrawn is
+//! "priority"}`, `priority` being `normal` or `high`, and `button` for one
+//! that has a button: `{"label", "action", "target"}`, the action
+//! activated with the target when it is pressed; one withdrawn is
 //! `{"action": "withdraw", "id"}`. Each pair's low battery notification has
-//! the ID `low-battery-<MAC>`, and the last entry with it says whether it is
-//! on show. Recorded as the app hands each one to GIO, whether or not a
+//! the ID `low-battery-<MAC>`, its nearby notification `nearby-<MAC>`, with
+//! the button `Connect` running `app.connect` for the pair; the last entry
+//! with an ID says whether it is on show. Recorded as the app hands each one to GIO, whether or not a
 //! notification server is there to show it: the fake world's session bus
 //! has none.
 //!
@@ -342,10 +346,20 @@ enum Notified {
         title: String,
         body: String,
         priority: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        button: Option<Button>,
     },
     Withdraw {
         id: String,
     },
+}
+
+/// A notification's button: what the notification server is handed.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct Button {
+    label: &'static str,
+    action: String,
+    target: String,
 }
 
 impl From<&Action> for Notified {
@@ -356,6 +370,13 @@ impl From<&Action> for Notified {
                 title: notice.title.clone(),
                 body: notice.body.clone(),
                 priority: if notice.critical { "high" } else { "normal" },
+                button: super::notifications::button(notice).map(|(label, action, target)| {
+                    Button {
+                        label,
+                        action,
+                        target,
+                    }
+                }),
             },
             Action::Withdraw(id) => Notified::Withdraw { id: id.clone() },
         }
@@ -1395,6 +1416,7 @@ mod tests {
             title: "AirPods battery low".into(),
             body: "Left 9%, Right 12%".into(),
             critical: false,
+            connect: false,
         };
         record_notification(&Action::Show(notice.clone()));
         assert_eq!(notifications().unwrap(), "[]");
@@ -1403,9 +1425,18 @@ mod tests {
         record_notification(&Action::Show(notice.clone()));
         record_notification(&Action::Show(crate::notify::Notice {
             critical: true,
+            connect: false,
             ..notice
         }));
         record_notification(&Action::Withdraw("low-battery-00:00:5E:00:53:01".into()));
+        record_notification(&Action::Show(crate::notify::Notice {
+            id: "nearby-00:00:5E:00:53:01".into(),
+            title: "AirPods nearby".into(),
+            body: "Not connected to this computer".into(),
+            critical: false,
+            connect: true,
+            ..notice
+        }));
         let json: serde_json::Value = serde_json::from_str(&notifications().unwrap()).unwrap();
         assert_eq!(
             json,
@@ -1425,6 +1456,18 @@ mod tests {
                     "priority": "high",
                 },
                 { "action": "withdraw", "id": "low-battery-00:00:5E:00:53:01" },
+                {
+                    "action": "send",
+                    "id": "nearby-00:00:5E:00:53:01",
+                    "title": "AirPods nearby",
+                    "body": "Not connected to this computer",
+                    "priority": "normal",
+                    "button": {
+                        "label": "Connect",
+                        "action": "app.connect",
+                        "target": "00:00:5E:00:53:01",
+                    },
+                },
             ])
         );
     }

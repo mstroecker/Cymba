@@ -26,6 +26,10 @@
 //! next sync. bluetoothd keeps an adapter's providers while it is off, so
 //! power alone changes nothing here.
 //!
+//! After every change to the adapters the coordinator is told their
+//! addresses (`Coordinator::set_adapter_addresses`), and none known once
+//! attachment stops.
+//!
 //! After every change to the adapters the attached pairs are swept again
 //! against what BlueZ reports connected: pairs that connected while nothing
 //! could be heard of it are attached, and those whose connection went - with
@@ -119,8 +123,10 @@ pub async fn run(coordinator: Arc<Coordinator>) {
                 let began = Instant::now();
                 attachment.run().await;
                 tracing::warn!("attachment stopped: BlueZ's signals ended");
-                // Its pairs went with it, attached no longer.
+                // Its pairs went with it, attached no longer, and what it
+                // read of the adapters stands no more.
                 coordinator.set_attached(HashSet::new()).await;
+                coordinator.set_adapter_addresses(None).await;
                 backoff.ended(began.elapsed())
             }
             Err(e) => {
@@ -286,6 +292,11 @@ impl Attachment {
     async fn update_adapters(&mut self) {
         // Cloned out: the borrow holds the watch's lock.
         let adapters = self.adapters.borrow_and_update().clone();
+        // This computer's adapters, for the nearby notification
+        // (`docs/app/nearby.md#when-the-pods-say-they-will-not-come`).
+        self.coordinator
+            .set_adapter_addresses(adapters.addresses())
+            .await;
         let forgotten: Vec<String> = self
             .providers
             .iter()

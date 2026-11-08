@@ -25,7 +25,7 @@ src/
 ├── aap/           # Apple Accessory Protocol over L2CAP (PSM 4097): session, decode
 ├── ble/           # Scanner, Apple Continuity parser, AES decryption, RPA resolution
 ├── bluez.rs       # Adapters, devices, connection watch; a battery provider per adapter; connecting a pair
-├── attachment.rs  # Which pairs get AAP, and each battery to its adapter's provider
+├── attachment.rs  # Which pairs get AAP, and each battery to its adapter's provider; the adapters' addresses
 ├── keystore.rs    # ENC_KEY and IRK per pair at ~/.local/share/cymba/keys.json (0600)
 ├── readings.rs    # Each pair's last BLE reading across a relaunch, in readings.json beside the keys
 ├── media.rs       # The media paused when a pod leaves an ear, played again once back (MPRIS)
@@ -33,6 +33,8 @@ src/
 ├── settings.rs    # Preferences' settings at ~/.config/cymba/settings.json
 ├── indicator.rs   # System tray via StatusNotifierItem (ksni)
 ├── notify.rs      # Low battery notifications: what to warn about, once per crossing
+├── nearby.rs      # The nearby notification: a known pair back after a quiet stretch or a resume from sleep, or taken out of its case, once per return
+├── presence.rs    # Whether the user is at the desktop, logind's session, and each resume from sleep, counted, with when the sleep began
 ├── volume.rs      # The pair's volume lowered while the user speaks (MediaTransport1)
 ├── ui/            # GTK4/libadwaita: window, Control page, rename dialog, Preferences, scanning hint, notifications, the connect action, automation
 ├── harness/       # Harness only: fake AirPods, fake BlueZ, a fake media player, the fake world
@@ -97,6 +99,10 @@ How the parts fit together: [docs/app/architecture.md](docs/app/architecture.md)
   lock to tell an event, alone to register, never across an await. [Why](docs/app/state.md#events)
 - `Snapshot::attached` is attachment's: the pairs it has attached (connected, AirPods service),
   replaced whole after every attach and detach, emptied when it stops.
+  [Why](docs/app/state.md#what-a-snapshot-shows)
+- `Snapshot::adapter_addresses` is attachment's too: every adapter's `Address`, read with the
+  `AdapterSet` and never by a call of its own, told after every change to the adapters; `None`
+  when it stops, while BlueZ is off the bus, or while an adapter's address does not read.
   [Why](docs/app/state.md#what-a-snapshot-shows)
 
 **AAP links and commands.** [Why](docs/app/aap-links.md)
@@ -300,13 +306,74 @@ notification was Conversation Awareness's speech level `09` (#150).
   first in its `select!`, the switch next; tests wait on `MediaControl::settled`.
   [Why](docs/app/media-pause.md#the-task)
 
+**The nearby notification.** [Why](docs/app/nearby.md)
+- A return is a pair's first live advertisement after `nearby::QUIET` unheard, or never heard
+  this run, by real MAC, on the wall clock; a restored reading gives its time alone, never a
+  return; a snapshot with the pair connected here, and the first without it after one, counts
+  as heard. The notifier's first snapshot is taken before scanning starts, and judged before
+  any later one. [Why](docs/app/nearby.md#a-return)
+- Every resume from sleep makes a return pending for every known pair, in place of one waiting
+  from before it, with when the sleep began (`presence::Resumes`: a count and the time of
+  `PrepareForSleep(true)`, else of the `false`), passed to `Returns` as an argument. With one
+  pending, a live reading heard since the sleep began, and within `nearby::QUIET` of now, is
+  the return, whenever it was taken in. While one is pending, a reading from before the sleep
+  is no return of any kind, unless the sleep began after now (the clock set back). It is used
+  up only when notified, or when a connection here begins after the resume; a pair still shown
+  connected after the resume uses nothing up. [Why](docs/app/nearby.md#a-return)
+- A pod out of the case is a return, each time, when the live readings before it had both pods
+  in the case for at least `nearby::IN_CASE_SETTLE` (a guess) on the wall clock, from the first
+  that said so; never a count of readings, never a restored reading, not while connected here
+  (a snapshot connected here ends the stay, and one begun after it starts no earlier than the
+  first snapshot without the connection), and not from before a sleep while a resume's
+  return is pending. One that coincides with another return gives one notice.
+  [Why](docs/app/nearby.md#a-pull-out)
+- Every return the pods do not say will stay away (next rule) is shown only once it has
+  qualified for `nearby::SHOW_AFTER` (a guess), unbroken, from the first update that found it
+  qualifying, whether a reading or a snapshot such as a detach began it, and never from a
+  return it replaced: judged by `Returns` with the time as an argument, `run` waking for it,
+  sleeping at most `SHOW_AFTER`, but not while the user is away.
+  [Why](docs/app/nearby.md#what-is-notified)
+- The wait is skipped only when the last live advertisement, heard since the pair was last
+  connected here, says the pods will not come: the host it names (`PodState::last_host`,
+  decrypted bytes 4-6) ends none of `Snapshot::adapter_addresses`, or byte 8 is `0x05`, `0x06`
+  or `0x07`. Both readings are unconfirmed and say so wherever used; the wait is kept for
+  `0x04`, any other value, no host, adapters not known or none, and a reading cached while
+  connected. [Why](docs/app/nearby.md#when-the-pods-say-they-will-not-come)
+- `docs/app/nearby.md`'s decision table and withdrawal table are the reference for what is
+  shown and withdrawn: a change to what `Returns` or `nearby::Gate` decides changes them and
+  `nearby::tests::the_decision_table` and `the_withdrawal_table`, row for row, in the same
+  order. [Why](docs/app/nearby.md#when-a-notice-shows)
+- Notified once per return, only with a pod out of the case (`PodState::out_of_case`, from a
+  live advertisement alone) and not connected here (attached or on AAP); no filter for a phone.
+  Withdrawn once the pair connects here, or a return after `QUIET` or a pull-out comes without
+  a notice of its own at once. [Why](docs/app/nearby.md#what-is-notified)
+- Withdrawn `nearby::SHOWN_FOR` after it is shown, judged by `Returns` on the wall clock with
+  the time as an argument, `run` sleeping at most `SHOWN_FOR` for it, and at the quit in
+  `shutdown`. [Why](docs/app/nearby.md#the-notification)
+- Held while the user is away - logind's session not `Active`, or `IdleHint` or `LockedHint` -
+  and shown on the user's return only if it still qualifies. Where logind cannot tell, the user
+  is at the desktop; with no session found, `presence` still takes resumes in and looks for the
+  session again on `bluez::Backoff`. [Why](docs/app/nearby.md#at-the-desktop)
+- `presence` calls logind only at the unique name read first, without auto-start, within
+  `presence::CALL_LIMIT`; logind's signals come in one stream, subscribed before anything is
+  read; a session's signal (at the session's path) or `PrepareForSleep` (at the manager's)
+  counts only from that name, `NameOwnerChanged` only from the bus. Whether the user is at the
+  desktop and the resumes go to the notifier as one value (`presence::Presence`), and
+  `nearby::run` reads the latest of it and of the snapshots whatever woke it.
+  [Why](docs/app/nearby.md#at-the-desktop)
+- Its button runs `app.connect` with the pair's MAC; a failure there is logged alone.
+  [Why](docs/app/nearby.md#the-notification)
+- The switch (`app.nearby-notifications`) is read by the delivery loop, through `nearby::Gate`:
+  off withdraws what is on show, on shows nothing sent meanwhile.
+  [Why](docs/app/nearby.md#the-switch)
+
 ## Patterns
 
 - Keep protocol parsing pure and tested. `aap::battery`, `aap::conversation`, `aap::ear`,
   `aap::info`, `aap::keys`, `aap::name`, `aap::noise`, `aap::message`, `ble::parser`, `ble::decrypt`, `ble::rpa` take bytes and
   return values, and carry the bulk of the test suite; `noise::ModeState`,
-  `ear::EarState`, `rpa::ResolvedAddresses`, `notify::Alerts`, `volume::Ducking` and
-  `media::EarPause` take the time as an argument for the same reason; `volume::a2dp_in`
+  `ear::EarState`, `rpa::ResolvedAddresses`, `notify::Alerts`, `nearby::Returns`,
+  `volume::Ducking` and `media::EarPause` take the time as an argument for the same reason; `volume::a2dp_in`
   and `volume::a2dp_active_in` read BlueZ's objects as values. `aap::decode` routes every packet by its header and opcode;
   each module's `is_*` and `parse_*` still check the header themselves, so they stay safe
   to call on their own.
@@ -351,10 +418,11 @@ notification was Conversation Awareness's speech level `09` (#150).
   test's doc says what the test asserts.
   [Why](docs/README.md#code-comments)
 - Log text describing control flow goes stale like comments, and is more visible.
-- Tasks on the system bus (`ble_task`, `attachment::run`) never return for good: they set
+- Tasks on the system bus (`ble_task`, `attachment::run`, `presence::run`) never return for good: they set
   themselves up again with `bluez::Backoff`, which counts a run under a minute as a
-  failure, so a connection that dies at once is not retried in a loop. Each used to give
-  up at its first error, and the app stayed deaf until restarted (#50). `volume::Volume`
+  failure, so a connection that dies at once is not retried in a loop. `ble_task` and
+  `attachment::run` each used to give up at its first error, and the app stayed deaf until
+  restarted (#50). `volume::Volume`
   calls BlueZ only for a speech level, a fade step, a look for a transport that went, a
   link going or the quit, connecting when one needs it and again after a connection
   failed, so it has no retry loop to back off; `media::Media` likewise calls only for a
@@ -376,12 +444,12 @@ notification was Conversation Awareness's speech level `09` (#150).
   `ScanControl::pause_discovery`, and the pause shows only once the scanner reports it, as the time
   it ends, never a countdown. [Why](docs/app/ui.md#the-scanning-hint)
 - A setting is not device state: its switch is bound to an app action (`app.battery-notifications`,
-  `app.pause-on-ear`) and shows that action's state. [Why](docs/app/ui.md#settings)
+  `app.nearby-notifications`, `app.pause-on-ear`) and shows that action's state. [Why](docs/app/ui.md#settings)
 - Settings load (`settings::open`) before any action is created, so a switch saved off starts off.
   `settings::Saver` writes each change on tokio's blocking pool, never the main loop: the latest
   settings, whatever order the saves run in. A file that does not parse is set aside and the
-  defaults used; a save that fails keeps the change in memory. `app.pause-on-ear` is on by default,
-  also for a file from before it. [Why](docs/app/ui.md#settings)
+  defaults used; a save that fails keeps the change in memory. `app.pause-on-ear` and
+  `app.nearby-notifications` are on by default, also for a file from before them. [Why](docs/app/ui.md#settings)
 - Read a selection *before* mutating the widget: splicing a `StringList` makes `GtkDropDown` emit
   `selected-notify`, clobbering the user's choice. [Why](docs/app/ui.md#drop-downs)
 - Noise Control, Conversation Awareness and the Name row stay insensitive unless the device is on
@@ -409,7 +477,7 @@ notification was Conversation Awareness's speech level `09` (#150).
   main context, one per pair, once per crossing, never per snapshot: the worst band stands until
   the part charges or clears `notify::REARM_ABOVE`. Only from a fresh reading: AAP, or BLE heard
   within `notify::FRESH` (#126, #169).
-- The switch (`app.battery-notifications`) is read by the delivery loop, not the notifier: off
+- The switch (`app.battery-notifications`) is read by the delivery loop, not the low battery notifier: off
   withdraws what is on show, on shows it again, and `notify::Alerts` goes on tracking crossings.
   [Why](docs/app/notifications.md)
 - A missing GResource fails silently: every name the UI loads is in
@@ -446,7 +514,8 @@ A `Co-Authored-By:` trailer is fine.
 - [`l2cap.md`](docs/protocol/linux/l2cap.md) - a connect that returns with the channel still pending (#136)
 - [`bluez.md`](docs/protocol/linux/bluez.md) - discovery and what it blocks, advertisement monitors, adapters and restarts, providers, `MediaTransport1.Volume`, `Device1.Connect` and a pair another host holds, names
 - [`zbus.md`](docs/protocol/linux/zbus.md) - queues, the object server's dispatch, senders, order across subscriptions
-- [`desktop.md`](docs/protocol/linux/desktop.md) - PipeWire, MPRIS, a press on a pod, UPower, GApplication
+- [`desktop.md`](docs/protocol/linux/desktop.md) - PipeWire, MPRIS, a press on a pod, UPower, GApplication, where GLib sends a notification and its buttons, logind's session hints, Flatpak's bus proxy
+- [`clocks.md`](docs/protocol/linux/clocks.md) - which clocks go on while the machine sleeps: `Instant` and tokio's not, the wall clock
 
 [`docs/app/`](docs/app/) - what Cymba does, and why:
 - [`architecture.md`](docs/app/architecture.md) - threads, channels, tasks, the coordinator; a map of the rest
@@ -466,6 +535,7 @@ A `Co-Authored-By:` trailer is fine.
 - [`names.md`](docs/app/names.md) - the pods' name beside BlueZ's alias, the rename dialog
 - [`firmware.md`](docs/app/firmware.md) - the firmware version read, kept for the run, shown
 - [`notifications.md`](docs/app/notifications.md) - low battery notifications
+- [`nearby.md`](docs/app/nearby.md) - the nearby notification, a return, the user at the desktop
 - [`ui.md`](docs/app/ui.md) - updates from snapshots, controls, the connect banner, the scanning hint, settings, resources, the tray
 - [`logging.md`](docs/app/logging.md) - log stages, what is never logged
 - [`from-linuxpods.md`](docs/app/from-linuxpods.md) - the LinuxPods directories moved at startup, a LinuxPods install removed

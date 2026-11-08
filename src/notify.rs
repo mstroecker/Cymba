@@ -84,7 +84,9 @@ impl Part {
     }
 }
 
-/// A notification to show, or to replace the one with its ID.
+/// A notification to show, or to replace the one with its ID. The fields
+/// below but `connect` say what a low battery notice holds; a nearby one is
+/// built by `crate::nearby`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notice {
     pub mac: Address,
@@ -96,9 +98,12 @@ pub struct Notice {
     pub body: String,
     /// Whether a part is at or below [`CRITICAL`].
     pub critical: bool,
+    /// Whether it offers a Connect button, which runs `app.connect` for
+    /// `mac`: the nearby notification's (`crate::nearby`).
+    pub connect: bool,
 }
 
-/// What [`Alerts`] has to be done.
+/// What [`Alerts`], or `crate::nearby::Returns`, has to be done.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     /// Show the notice, replacing the pair's one if it is on show.
@@ -245,6 +250,7 @@ fn notice(mac: Address, warned: &[Option<Warned>; 3], snapshot: &Snapshot) -> No
         title,
         body,
         critical,
+        connect: false,
     }
 }
 

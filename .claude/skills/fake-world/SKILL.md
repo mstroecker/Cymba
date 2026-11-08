@@ -200,6 +200,25 @@ unanswered for 30 s, until `bluez::DEVICE_CONNECT_LIMIT` ended the call
 `Couldn’t connect the AirPods` in `toasts`, the action run from outside only logs
 `failed to connect`.
 
+The nearby notification (#196): in `in-range`, with no readings saved before the run,
+the pair's first live advertisement is a return, so `world SetInCase
+00:00:5E:00:53:01 left false` takes a pod out and, at once - the fake pods name a
+host that is no fake adapter's, so the app skips `nearby::SHOW_AFTER`
+([fake-world.md](../../../docs/development/fake-world.md)) -
+`app Notifications` lists a `send` with the ID `nearby-00:00:5E:00:53:01`, titled `AirPods Pro 3 (fake) nearby`, its
+`button` `Connect` running `app.connect` for the pair; the app logs `nearby again;
+advertised as naming another host`. Both
+pods in the open case send nothing. Press the button as GNOME Shell does: `gdbus call
+--address "$SESSION_BUS" --dest io.github.mstroecker.Cymba --object-path
+/io/github/mstroecker/Cymba --method org.freedesktop.Application.ActivateAction connect
+"[<'00:00:5E:00:53:01'>]" '{}'`; the pair connects and a `withdraw` of the ID follows.
+The fake world has no logind, so the user is always at the desktop. A return after a
+quiet stretch needs `nearby::QUIET` of quiet, so only the first one of a run can be seen,
+but a pull-out comes each time the pair is not connected here (`world Disconnect` after
+the button): put the pod back with `world SetInCase 00:00:5E:00:53:01 left true`, wait
+`nearby::IN_CASE_SETTLE`, and take it out again. Each `send` comes at once after the
+pod is taken out. The switch is `nearby-notifications` in Preferences.
+
 The Model and Color rows: `model-name` and `color-name` read the model and `White` -
 `AirPods Pro 3` for a scenario's first pair, `AirPods Pro (2nd gen, USB-C)` for
 `two-pairs`' second - once an advertisement has identified the pair, `Unknown`, with

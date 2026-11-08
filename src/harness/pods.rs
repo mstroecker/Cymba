@@ -82,6 +82,11 @@ pub const ECHO_DELAY: Duration = Duration::from_secs(1);
 /// default: 0.33 s in the #71 capture - see [`Quirks::stale_report`].
 pub const STALE_REPORT: Duration = Duration::from_millis(330);
 
+/// The last three bytes of the host the fake pods' advertisement names,
+/// whatever they connect to: `00:00:5E:00:53:E0`, from the block RFC 7042
+/// sets aside for documentation, and no fake adapter's.
+pub const FAKE_LAST_HOST: [u8; 3] = [0x00, 0x53, 0xE0];
+
 /// Where an AAP packet carries its command.
 const OPCODE: usize = 4;
 
@@ -1169,6 +1174,7 @@ impl Pods {
             secondary_charging: other.charging,
             case_battery,
             case_charging: self.case_charging,
+            last_host: FAKE_LAST_HOST,
             mac_suffix,
             tail: [0; 4],
         };
