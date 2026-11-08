@@ -31,6 +31,17 @@ GNOME Settings battery was withdrawn and exported again on every reconnect.
 | Noise mode, Conversation Awareness, speech level, the pods' name | The link alone: [noise-control.md](noise-control.md), [conversation-awareness.md](conversation-awareness.md), [names.md](names.md) |
 | Firmware version | `Inner::firmware_versions`, kept for the run: [firmware.md](firmware.md) |
 
+Beside the pairs' states, a snapshot says which pairs are on AAP, BlueZ's names, and
+which pairs attachment has [attached](aap-links.md#which-pairs), linked or not. The window offers to connect only a pair
+that is neither ([ui.md](ui.md#the-connect-banner)).
+
+**The attached set is attachment's, replaced whole.** Only attachment reads BlueZ's
+connection state, and it tells the coordinator its set after every attach and detach
+(`Coordinator::set_attached`), as it tells BlueZ's names (`set_device_names`); each is
+broadcast under `inner`'s write lock. When attachment stops, its supervisors and their
+links go with it, and the set it told would stand for pairs nothing holds: so it is
+emptied then, and the attachment that starts over tells its own.
+
 **No primary pod.** Each pod advertises as itself and calls itself primary
 ([protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#which-pod-sent-it)),
 so the advertisement's flag says only which pod was heard last. In a snapshot, every

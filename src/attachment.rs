@@ -41,8 +41,10 @@
 //!
 //! What attachment knows about a pair is one [`Attached`] entry, by real MAC: its
 //! BlueZ object, its adapter, the level its battery shows and its supervisor.
-//! One record, so there is nothing to keep in step: no second map, by object
-//! path or inside the battery provider, holds any of it.
+//! One record: no second map, by object path or inside the battery provider,
+//! holds any of it. The one copy is the coordinator's `Inner::attached`, which
+//! each snapshot clones, the MACs alone: replaced whole by `report_attached`
+//! after every attach and detach, and emptied by `run` when attachment stops.
 //!
 //! The coordinator's AAP links are not a copy of it. A link can fail to come up,
 //! or die while BlueZ keeps the pair connected, so attached and linked are two
@@ -74,7 +76,7 @@
 //! its supervisors along, and their links with them; the one that starts over
 //! links the pairs it finds connected afresh.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -117,6 +119,8 @@ pub async fn run(coordinator: Arc<Coordinator>) {
                 let began = Instant::now();
                 attachment.run().await;
                 tracing::warn!("attachment stopped: BlueZ's signals ended");
+                // Its pairs went with it, attached no longer.
+                coordinator.set_attached(HashSet::new()).await;
                 backoff.ended(began.elapsed())
             }
             Err(e) => {
@@ -318,14 +322,14 @@ impl Attachment {
                 self.providers.insert(path.to_string(), registration);
             }
         }
-        // Names for the device switcher and the rename dialog. Read up front
-        // so paired devices are labeled before any of them connects, then
-        // again on every connection event BlueZ confirms, and on a services
-        // change of a connected device that is not attached yet - a rename
-        // made while the app was running takes effect at the next one, and a
-        // newly paired pair shows up with its services, which BlueZ fills in
-        // once pairing is done. An adapter plugged in brings its paired
-        // devices.
+        // Names for the device switcher, the rename dialog and the connect
+        // banner. Read up front so paired devices are labeled before any of
+        // them connects, then again on every connection event BlueZ
+        // confirms, and on a services change of a connected device that is
+        // not attached yet - a rename made while the app was running takes
+        // effect at the next one, and a newly paired pair shows up with its
+        // services, which the app assumes, unchecked, BlueZ fills in once
+        // pairing is done. An adapter plugged in brings its paired devices.
         self.update_names().await;
         self.sweep().await;
     }
@@ -555,6 +559,7 @@ impl Attachment {
                 supervisor: Some(supervisor),
             },
         );
+        self.report_attached().await;
     }
 
     /// Detaches a pair: stops its work and withdraws its battery. Any other pair
@@ -570,6 +575,15 @@ impl Attachment {
             self.apply(pair.adapter.as_deref(), &BatteryAction::Remove { mac })
                 .await;
         }
+        self.report_attached().await;
+    }
+
+    /// Tells the coordinator which pairs are attached, for
+    /// `Snapshot::attached`.
+    async fn report_attached(&self) {
+        self.coordinator
+            .set_attached(self.attached.keys().copied().collect())
+            .await;
     }
 
     /// Starts a pair's work, at `path`: its supervisor, which links it over

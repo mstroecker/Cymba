@@ -36,6 +36,9 @@
 //! window actions; there, open the menu with `Click("main-menu")` and click
 //! its item.
 //!
+//! `app.connect`, which takes a MAC as its string target, is served there
+//! too, as any other process on the session bus can run it.
+//!
 //! GDBus calls the handlers on the main context, so they touch widgets
 //! directly; nothing here runs on tokio. The tree is read into [`Node`]s, plain
 //! data that is turned into JSON and searched without GTK, which is what the
@@ -56,6 +59,7 @@
 //! | `main-window` | the window |
 //! | `toasts` | the window's toast overlay; a failed command's toast is in it while shown |
 //! | `main-menu` | the primary menu's button |
+//! | `connecting` | the spinner at the start of the header bar: visible and `spinning` while a connect to the pair shown is under way, whatever started it |
 //! | `window-title` | the title, shown while the switcher is not |
 //! | `device-dropdown` | the device switcher, shown with more than one device |
 //! | `content` | a stack: page `device`, or `empty` while no device is known |
@@ -65,6 +69,7 @@
 //! | `battery-<column>-charging`, `battery-<column>-in-ear` | its icons, visible while they apply |
 //! | `status` | the status text under the battery display: the lid, what the pods are doing, the source |
 //! | `last-seen` | how old a BLE reading is; hidden for AAP |
+//! | `connect` | the banner under the header bar, titled `Your AirPods are not connected`, its button `Connect`: revealed while BlueZ has the pair paired and it is neither attached nor on AAP - see docs/app/ui.md#the-connect-banner; clicked, its button runs `app.connect` for the pair, and a failure's toast is in `toasts`. While a connect to the pair is under way it is titled `Connecting…` with its button hidden, so a click is refused as `Hidden` |
 //! | `noise-control` | the Noise Control group, insensitive unless the device is on AAP |
 //! | `noise-off`, `noise-noise-cancellation`, `noise-transparency`, `noise-adaptive` | its radios |
 //! | `conversation-awareness` | the Features switch for Conversation Awareness: on as the snapshot has it, insensitive unless the device is on AAP and has reported it; turning it sends the command |
@@ -104,26 +109,33 @@
 //! - `path`: `/` and an index per level, from the window down: `/0/2/1`
 //! - `role`: its accessible role, `label`, `button`, `check-box`
 //! - text, where there is some: `label`, `title`, `subtitle`, `description`,
-//!   `icon` for an image's icon name, and `text` for an entry's text
+//!   `icon` for an image's icon name, and `text` for an entry's text; a
+//!   banner's `label` is its button's
 //! - `classes`: an entry's or a label's style classes, such as `error`,
 //!   where it has any
 //! - state, where there is some: `active` for switches, check and toggle
 //!   buttons; `selected` and `items` for dropdowns; `value` for level bars,
-//!   from 0 to 1; `page` for a stack's visible page
+//!   from 0 to 1; `page` for a stack's visible page; `revealed` for a banner;
+//!   `spinning` for a spinner
 //! - `sensitive`: whether it takes input - false when it or anything holding
 //!   it is insensitive, which is also how it is drawn
 //! - `visible`: its own `visible` property, the one the UI code sets
 //! - `mapped`: whether it is on screen - visible along with everything holding
-//!   it, on the stack page shown, in a window that is shown
+//!   it, on the stack page shown, in a window that is shown. A banner that is
+//!   not revealed stays mapped, at no height (seen with libadwaita 1.10.0,
+//!   GTK 4.24.1, 2026-11-08, #195: a banner in a toolbar view, unrevealed,
+//!   reads mapped with height 0): its `revealed` says whether it shows
 //! - `children`, if it has any
 //!
 //! ## Pressing
 //!
 //! `Click`, `SetActive`, `Select` and `SetText` refuse what a user could not press either:
-//! a widget that is not on screen, or one that takes no input. That is what
+//! a widget that is not on screen - a banner not revealed, or one whose
+//! button is hidden, among them - or one that takes no input. That is what
 //! lets a test see Noise Control closed to a device on BLE. A press takes the
 //! user's path, and is done when the call returns: `Click` emits a button's
-//! `clicked`, pops a menu button's popover up or down, flips a switch,
+//! `clicked` - a banner's own button's too - pops a menu button's popover up
+//! or down, flips a switch,
 //! presses Enter in an entry, and activates anything else with
 //! `gtk_widget_activate`, as Enter on it does.
 //! `SetActive` clicks the widget only when its state differs, so a check
@@ -536,6 +548,10 @@ struct Node {
     value: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     page: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    revealed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    spinning: Option<bool>,
     sensitive: bool,
     visible: bool,
     mapped: bool,
@@ -607,10 +623,16 @@ fn node_at<'a>(roots: &'a [Node], indices: &[usize]) -> Option<&'a Node> {
         .try_fold(roots.get(*first)?, |node, &index| node.children.get(index))
 }
 
+/// Whether the widget shows on screen: mapped, and revealed if it is a
+/// banner.
+fn on_screen(node: &Node) -> bool {
+    node.mapped && node.revealed != Some(false)
+}
+
 /// Refuses a press a user could not make either: on a widget that is not on
 /// screen, or one that takes no input.
 fn pressable(node: &Node, target: &str) -> Result<(), Error> {
-    if !node.mapped {
+    if !on_screen(node) {
         return Err(Error::Hidden(target.to_string()));
     }
     if !node.sensitive {
@@ -727,20 +749,28 @@ fn tree() -> Result<String, Error> {
 fn click(target: &str) -> Result<(), Error> {
     with_target(target, |widget, node| {
         pressable(node, target)?;
-        if press(widget) {
-            Ok(())
-        } else {
-            Err(unsupported(node, target, "be clicked"))
+        match press(widget) {
+            Pressed::Done => Ok(()),
+            Pressed::Hidden => Err(Error::Hidden(target.to_string())),
+            Pressed::Unsupported => Err(unsupported(node, target, "be clicked")),
         }
     })
+}
+
+/// What [`press`] made of a click.
+enum Pressed {
+    Done,
+    /// What the click would land on inside the widget is not on screen.
+    Hidden,
+    /// The widget takes no click.
+    Unsupported,
 }
 
 /// Does what a click on the widget ends in, before returning. Activating a
 /// button or a switch - the keyboard's way - would not: a button is held
 /// down for a quarter second before it emits `clicked`, and a switch slides
-/// over before it flips. An entry is pressed as Enter in it is. False when
-/// the widget takes no click.
-fn press(widget: &gtk::Widget) -> bool {
+/// over before it flips. An entry is pressed as Enter in it is.
+fn press(widget: &gtk::Widget) -> Pressed {
     if let Some(button) = widget.downcast_ref::<gtk::Button>() {
         // Toggles a toggle button, and activates an action bound to it.
         button.emit_clicked();
@@ -751,19 +781,33 @@ fn press(widget: &gtk::Widget) -> bool {
         } else {
             menu.popup();
         }
+    } else if let Some(banner) = widget.downcast_ref::<adw::Banner>() {
+        // Its button is internal. Its `clicked` emits the banner's
+        // `button-clicked` (libadwaita 1.10, `src/adw-banner.ui` and
+        // `src/adw-banner.c`), so this takes a user's click's path. It is
+        // hidden while the banner has no button label.
+        let Some(button) =
+            descendants(banner.upcast_ref()).find_map(|child| child.downcast::<gtk::Button>().ok())
+        else {
+            return Pressed::Unsupported;
+        };
+        if !button.is_mapped() {
+            return Pressed::Hidden;
+        }
+        button.emit_clicked();
     } else if let Some(switch) = widget.downcast_ref::<gtk::Switch>() {
         switch.set_active(!switch.is_active());
     } else if let Some(entry) = widget.downcast_ref::<gtk::Entry>() {
         // Enter in it: the text inside it activates, and with
         // `activates-default` the dialog's default response with it.
         let Some(text) = entry.delegate().and_downcast::<gtk::Text>() else {
-            return false;
+            return Pressed::Unsupported;
         };
         text.emit_by_name::<()>("activate", &[]);
-    } else {
-        return widget.activate();
+    } else if !widget.activate() {
+        return Pressed::Unsupported;
     }
-    true
+    Pressed::Done
 }
 
 fn set_active(target: &str, active: bool) -> Result<(), Error> {
@@ -803,7 +847,7 @@ fn set_text(target: &str, text: &str) -> Result<(), Error> {
 
 async fn screenshot(target: &str) -> Result<String, Error> {
     let widget = with_target(target, |widget, node| {
-        if node.mapped {
+        if on_screen(node) {
             Ok(widget.clone())
         } else {
             Err(Error::Hidden(target.to_string()))
@@ -923,6 +967,14 @@ fn children(widget: &gtk::Widget) -> impl Iterator<Item = gtk::Widget> + use<> {
     std::iter::successors(widget.first_child(), |child| child.next_sibling())
 }
 
+/// Every widget inside `widget`, depth first.
+fn descendants(widget: &gtk::Widget) -> impl Iterator<Item = gtk::Widget> + use<> {
+    children(widget).flat_map(|child| {
+        let below: Box<dyn Iterator<Item = gtk::Widget>> = Box::new(descendants(&child));
+        std::iter::once(child).chain(below)
+    })
+}
+
 /// Reads a widget, and everything inside it.
 fn read(widget: &gtk::Widget) -> Node {
     let kind = widget.type_().name();
@@ -977,6 +1029,9 @@ fn read_text(widget: &gtk::Widget, node: &mut Node) {
     } else if let Some(page) = widget.downcast_ref::<adw::StatusPage>() {
         node.title = text(page.title());
         node.description = page.description().and_then(text);
+    } else if let Some(banner) = widget.downcast_ref::<adw::Banner>() {
+        node.title = text(banner.title());
+        node.label = banner.button_label().and_then(text);
     }
 }
 
@@ -1010,6 +1065,10 @@ fn read_state(widget: &gtk::Widget, node: &mut Node) {
         node.value = Some(level.value());
     } else if let Some(stack) = widget.downcast_ref::<gtk::Stack>() {
         node.page = stack.visible_child_name().map(Into::into);
+    } else if let Some(banner) = widget.downcast_ref::<adw::Banner>() {
+        node.revealed = Some(banner.is_revealed());
+    } else if let Some(spinner) = widget.downcast_ref::<gtk::Spinner>() {
+        node.spinning = Some(spinner.is_spinning());
     }
 }
 
@@ -1371,7 +1430,7 @@ mod tests {
     }
 
     /// Off screen goes first: a user could not even see whether the widget is
-    /// grayed out.
+    /// grayed out. A banner not revealed is off screen, though mapped.
     #[test]
     fn presses_refuse_what_a_user_could_not_press() {
         let shown = widget("GtkCheckButton", Some("noise-off"), vec![]);
@@ -1393,6 +1452,20 @@ mod tests {
         assert_eq!(
             pressable(&hidden, "noise-off"),
             Err(Error::Hidden("noise-off".into()))
+        );
+
+        let revealed = Node {
+            revealed: Some(true),
+            ..widget("AdwBanner", Some("connect"), vec![])
+        };
+        assert_eq!(pressable(&revealed, "connect"), Ok(()));
+        let unrevealed = Node {
+            revealed: Some(false),
+            ..revealed
+        };
+        assert_eq!(
+            pressable(&unrevealed, "connect"),
+            Err(Error::Hidden("connect".into()))
         );
     }
 

@@ -20,6 +20,9 @@ a retry to a pair the user has just disconnected would reconnect it.
   `Device1.Connected` first, and asks nothing while BlueZ is off the bus: under systemd a
   call would start it again ([protocol/linux/bluez.md](../protocol/linux/bluez.md#starting-bluetoothd)).
 
+**One page on purpose:** a connect asked for through `app.connect`, [bluez.md](bluez.md#connecting-a-pair).
+The app's AAP connects go only to a pair BlueZ reports connected (above).
+
 ## The supervisor
 
 Every attached pair has a supervisor (`attachment::supervise`), a task that owns its AAP

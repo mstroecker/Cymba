@@ -24,7 +24,7 @@ src/
 ├── podstate.rs    # Coordinator: merges AAP and BLE, broadcasts snapshots
 ├── aap/           # Apple Accessory Protocol over L2CAP (PSM 4097): session, decode
 ├── ble/           # Scanner, Apple Continuity parser, AES decryption, RPA resolution
-├── bluez.rs       # Adapters, devices, connection watch; a battery provider per adapter
+├── bluez.rs       # Adapters, devices, connection watch; a battery provider per adapter; connecting a pair
 ├── attachment.rs  # Which pairs get AAP, and each battery to its adapter's provider
 ├── keystore.rs    # ENC_KEY and IRK per pair at ~/.local/share/cymba/keys.json (0600)
 ├── readings.rs    # Each pair's last BLE reading across a relaunch, in readings.json beside the keys
@@ -34,7 +34,7 @@ src/
 ├── indicator.rs   # System tray via StatusNotifierItem (ksni)
 ├── notify.rs      # Low battery notifications: what to warn about, once per crossing
 ├── volume.rs      # The pair's volume lowered while the user speaks (MediaTransport1)
-├── ui/            # GTK4/libadwaita: window, Control page, rename dialog, Preferences, scanning hint, notifications, automation
+├── ui/            # GTK4/libadwaita: window, Control page, rename dialog, Preferences, scanning hint, notifications, the connect action, automation
 ├── harness/       # Harness only: fake AirPods, fake BlueZ, a fake media player, the fake world
 └── bin/fakepods.rs # Harness only: the fake world's process, which `make fake-world` runs
 ```
@@ -95,6 +95,9 @@ How the parts fit together: [docs/app/architecture.md](docs/app/architecture.md)
   one. [Why](docs/app/identification.md#pairs-with-no-irk)
 - Speech-event and ear-event consumers are a std mutex each beside `inner`: taken under its write
   lock to tell an event, alone to register, never across an await. [Why](docs/app/state.md#events)
+- `Snapshot::attached` is attachment's: the pairs it has attached (connected, AirPods service),
+  replaced whole after every attach and detach, emptied when it stops.
+  [Why](docs/app/state.md#what-a-snapshot-shows)
 
 **AAP links and commands.** [Why](docs/app/aap-links.md)
 - Every attached pair has a supervisor (`attachment::supervise`); attachment's event loop only
@@ -165,6 +168,14 @@ How the parts fit together: [docs/app/architecture.md](docs/app/architecture.md)
   level is unknown. [Why](docs/app/battery.md#gnome-settings)
 - `InProgress` from `StartDiscovery` never counts as started: stop, start again, and wait for the
   backoff at a second refusal (#123). [Why](docs/app/bluez.md#discovery)
+- `Device1.Connect`, the app's one page on purpose, only through `app.connect` (the window's
+  banner, or anything that runs it), never on the app's own event, signal or timer (#195).
+  [Why](docs/app/bluez.md#connecting-a-pair)
+- A connect is not an AAP command: it does not go through `Coordinator::command`.
+  [Why](docs/app/bluez.md#connecting-a-pair)
+- A connect goes only to paired AirPods (`is_airpods`) on a powered adapter.
+  [Why](docs/app/bluez.md#connecting-a-pair)
+- A connect waits at most `bluez::DEVICE_CONNECT_LIMIT`. [Why](docs/app/bluez.md#connecting-a-pair)
 
 ## Protocol
 
@@ -357,9 +368,10 @@ notification was Conversation Awareness's speech level `09` (#150).
   `/run/user/<uid>/bus`.
 
 **UI.** [Why](docs/app/ui.md)
-- Widget updates arrive only from the snapshot stream, and the scanning hint's from the scanner's
-  (`ScanControl::state`), followed the same way. The one exception is a command that fails: a
-  toast, an event, never a control's state. [Why](docs/app/ui.md#updates-come-from-snapshots)
+- Widget updates arrive only from the snapshot stream, the scanning hint's from the scanner's
+  (`ScanControl::state`), and a connect under way from `connect::Connecting`, on the main context.
+  The one exception is a command or a connect that fails: a toast, an event, never a control's
+  state. [Why](docs/app/ui.md#updates-come-from-snapshots)
 - The scanning hint shows while `ScanState::fallback` holds, undamped; its button asks
   `ScanControl::pause_discovery`, and the pause shows only once the scanner reports it, as the time
   it ends, never a countdown. [Why](docs/app/ui.md#the-scanning-hint)
@@ -380,6 +392,15 @@ notification was Conversation Awareness's speech level `09` (#150).
 - The Name row shows the pods' own name where the link has it, else BlueZ's alias; the rename dialog
   starts from the pods' name, never the alias, and refuses what `aap::name` would and the name the
   pods have. [Why](docs/app/names.md#the-name-row)
+- The connect banner, under the header bar, is revealed from the snapshot alone
+  (`control::offers_connect`: paired in BlueZ, neither attached nor on AAP), never by its press.
+  [Why](docs/app/ui.md#the-connect-banner)
+- The banner's title and button, and the header's spinner, show a connect to the pair shown under
+  way from `connect::Connecting`, whatever started it (`control::connect_shown`); never from the
+  press itself. [Why](docs/app/ui.md#the-connect-banner)
+- The banner's Connect runs `app.connect`, the MAC its string target. [Why](docs/app/ui.md#the-connect-banner)
+- Only the window's press (`connect::press`) toasts a failed connect; any other is logged.
+  [Why](docs/app/ui.md#the-connect-banner)
 - The Firmware row is no command: the version last reported this run, else "Unknown", insensitive.
   [Why](docs/app/firmware.md#what-the-app-does-with-it)
 - Elsewhere a pair is named by `Snapshot::display_name`: an alias set in BlueZ, else the pods' name,
@@ -423,9 +444,9 @@ A `Co-Authored-By:` trailer is fine.
 
 [`docs/protocol/linux/`](docs/protocol/linux/) - the stack under the app:
 - [`l2cap.md`](docs/protocol/linux/l2cap.md) - a connect that returns with the channel still pending (#136)
-- [`bluez.md`](docs/protocol/linux/bluez.md) - discovery and what it blocks, advertisement monitors, adapters and restarts, providers, `MediaTransport1.Volume`, names
+- [`bluez.md`](docs/protocol/linux/bluez.md) - discovery and what it blocks, advertisement monitors, adapters and restarts, providers, `MediaTransport1.Volume`, `Device1.Connect` and a pair another host holds, names
 - [`zbus.md`](docs/protocol/linux/zbus.md) - queues, the object server's dispatch, senders, order across subscriptions
-- [`desktop.md`](docs/protocol/linux/desktop.md) - PipeWire, MPRIS, a press on a pod, UPower
+- [`desktop.md`](docs/protocol/linux/desktop.md) - PipeWire, MPRIS, a press on a pod, UPower, GApplication
 
 [`docs/app/`](docs/app/) - what Cymba does, and why:
 - [`architecture.md`](docs/app/architecture.md) - threads, channels, tasks, the coordinator; a map of the rest
@@ -435,7 +456,7 @@ A `Co-Authored-By:` trailer is fine.
 - [`readings.md`](docs/app/readings.md) - the last readings across a relaunch (#170)
 - [`aap-links.md`](docs/app/aap-links.md) - which pairs get AAP, the supervisor, opening and ending a link
 - [`commands.md`](docs/app/commands.md) - the one path for commands, their order, what the caller hears
-- [`bluez.md`](docs/app/bluez.md) - adapters, the monitor and discovery, providers, subscriptions, which signals count
+- [`bluez.md`](docs/app/bluez.md) - adapters, the monitor and discovery, providers, connecting a pair, subscriptions, which signals count
 - [`battery.md`](docs/app/battery.md) - unknown levels, where a level goes, GNOME Settings
 - [`in-ear.md`](docs/app/in-ear.md) - in-ear from AAP, the role switch held back
 - [`noise-control.md`](docs/app/noise-control.md) - `0x34` only for Off, the mode recorded, stale reports held off
@@ -445,7 +466,7 @@ A `Co-Authored-By:` trailer is fine.
 - [`names.md`](docs/app/names.md) - the pods' name beside BlueZ's alias, the rename dialog
 - [`firmware.md`](docs/app/firmware.md) - the firmware version read, kept for the run, shown
 - [`notifications.md`](docs/app/notifications.md) - low battery notifications
-- [`ui.md`](docs/app/ui.md) - updates from snapshots, controls, the scanning hint, settings, resources, the tray
+- [`ui.md`](docs/app/ui.md) - updates from snapshots, controls, the connect banner, the scanning hint, settings, resources, the tray
 - [`logging.md`](docs/app/logging.md) - log stages, what is never logged
 - [`from-linuxpods.md`](docs/app/from-linuxpods.md) - the LinuxPods directories moved at startup, a LinuxPods install removed
 

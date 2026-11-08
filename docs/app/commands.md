@@ -5,7 +5,8 @@ what its caller hears. The commands are the noise control mode
 ([noise-control.md](noise-control.md)), Conversation Awareness
 ([conversation-awareness.md](conversation-awareness.md)) and the rename
 ([names.md](names.md#rename)). The key request is no command: the link sends it as it
-comes up ([keystore.md](keystore.md)).
+comes up ([keystore.md](keystore.md)). Nor is a connect, which has no link to go on
+([bluez.md](bluez.md#connecting-a-pair)).
 
 ## One path
 

@@ -28,7 +28,7 @@ The pipeline tests drive the same world from the test process.
 
 | What | The fake | The hardware |
 |---|---|---|
-| AAP transport | A Unix seqpacket socket per pair (`aap::client::unix_socket_path`), in place of L2CAP. The pending-connect handling of #136 never runs, and no connect pages a pair. | L2CAP on PSM 4097: [protocol/linux/l2cap.md](../protocol/linux/l2cap.md) |
+| AAP transport | A Unix seqpacket socket per pair (`aap::client::unix_socket_path`), in place of L2CAP. The pending-connect handling of #136 never runs, and no AAP connect pages a pair. | L2CAP on PSM 4097: [protocol/linux/l2cap.md](../protocol/linux/l2cap.md) |
 | Address rotation | Every `ADDRESS_ROTATION`, far faster on purpose, so tests meet rotation. The left pod's clock runs half a rotation off the right's. | Every 4-8 minutes, each pod on its own clock (#71): [protocol/ble/addresses.md](../protocol/ble/addresses.md#rotation) |
 | Advertising rate | One advertisement per `ADVERTISING_INTERVAL` from each pod that advertises | Faster, with bursts: [protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#update-frequency) |
 | Payload changes | Only when the state changes | Also again about 5 s, 30 s and 60 s after a change with nothing else changing (Pro 3 and Pro 2 (USB-C), 987ffe3), and once about 2 s after discovery starts (Pro 3, #153): [protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#update-frequency) |
@@ -51,6 +51,7 @@ The pipeline tests drive the same world from the test process.
 | A2DP transport paths | `<device>/sep1/fd<n>`, `n` new to the device with every transport | `n` the first free from the count of all bluetoothd's transports (BlueZ 5.87, `profiles/audio/transport.c`). Nothing depends on the number. |
 | A2DP `Volume` set | Every set that succeeds brings a `PropertiesChanged` as it returns, with the volume the transport holds by then ([protocol/linux/zbus.md](../protocol/linux/zbus.md#property-setters)): one held already, or one not answered yet, brings one that changes nothing. Nothing in the app watches the transport's signals: it reads `Volume` afresh. | A set of the volume held does nothing, and any other changes `Volume` only once the pods answer: [protocol/linux/bluez.md](../protocol/linux/bluez.md#mediatransport1volume) |
 | Audio server | None: the world's methods do what PipeWire, or the user, would | PipeWire sets A2DP up |
+| `Device1.Connect` | Answered success once the connect is under way, before `Connected=true` - or, with `SetPageDelay`, that long after the call, the pair connecting then; refused at once when the pair does not answer the page, which in the fake world is both pods in the closed case alone | Answered once the page and the profiles are done or have failed ([protocol/linux/bluez.md](../protocol/linux/bluez.md#device1connect)), read in BlueZ's source, its reply after `Connected` seen on a Pro 3 ([Runs](../protocol/linux/bluez.md#runs)); a real page timeout takes longer; how long is open: [Open questions](../protocol/linux/bluez.md#open-questions). bluetoothd left a `Connect` to pods in the closed case unanswered for 30 s, until `bluez::DEVICE_CONNECT_LIMIT` ended the call ([Runs](../protocol/linux/bluez.md#runs)); what bluetoothd replies in the end is open. Whether the pods out of range answer a page, or held by another kind of host than an iPhone, is open: [Open questions](../protocol/linux/bluez.md#open-questions). The fake's closed-case refusal at once is its guess. |
 
 The defaults are a Pro 3's. `SetQuirk` switches the fake pods to AirPods 4's answers to a
 mode change, or to a handshake left unanswered (seen once, with the Flatpak build; when, and on which model, is not recorded), or a
@@ -159,7 +160,7 @@ address of its own.
 
 What bluetoothd does that the app depends on:
 [protocol/linux/bluez.md](../protocol/linux/bluez.md). The fake serves only what the
-app calls: no pairing, no `Device1.Connect`, no agent.
+app calls: no pairing, no `Device1.Disconnect`, no agent.
 
 - **Adapters** can be powered off and on, plugged in and out, and bluetoothd restarted,
   at any time (#50). `set_discovery_busy` has an adapter refuse discovery with
@@ -177,6 +178,11 @@ app calls: no pairing, no `Device1.Connect`, no agent.
   discovering there (#153). Every adapter that hears advertisements hears every one.
 - **Connecting** a pair signals `ServicesResolved` `SERVICES_RESOLVED` after
   `Connected`.
+- **`Device1.Connect`** on a paired device connects the pair as `FakeWorld1`'s
+  `Connect` does, with bluetoothd's errors for an adapter that is off, a connect under
+  way, and a page not answered - both pods
+  in the closed case, a guess of the fake's. See the departures above, `FakeBluez::set_pager`,
+  and `SetPageDelay` for a page that takes time.
 - **Battery providers** are kept per adapter, as BlueZ 5.87's `src/battery.c` keeps
   them. A battery for a device that is not paired on the provider's adapter is ignored.
   `Batteries` of `FakeWorld1` reads what GNOME Settings would show.

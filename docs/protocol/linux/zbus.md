@@ -40,6 +40,9 @@ connection never got its reply, three runs out of three.
 - **Built serving, it misses nothing.** A connection built with an object served already
   (`connection::Builder::serve_at`) has the task subscribed before it reads its first
   message (52e5c5c, #125).
+- **A call holds its interface's lock until it returns.** A `&self` method runs under the
+  interface's read lock, so a change to that interface's properties waits for it
+  (`dispatch_call_to_iface` in zbus 5.19.0's `src/object_server/mod.rs`).
 
 Seen in the pipeline tests under load (#125): the fake BlueZ's `GetManagedObjects` of a
 new battery provider's root - the call bluetoothd makes as it takes a registration - went

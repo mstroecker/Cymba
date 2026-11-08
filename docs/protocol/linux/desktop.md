@@ -2,15 +2,17 @@
 
 What the desktop around BlueZ does that a client has to know: PipeWire following the
 transport's volume, MPRIS, the path a press on a pod takes to a player, and UPower's
-warning level for a Bluetooth battery, and how GApplication keeps an app to one
-instance. Checked on hardware where a run below says so; MPRIS is from its
-specification, UPower also from its source, GApplication from its documentation, and the
-key path is only as understood, not traced.
+warning level for a Bluetooth battery, how GApplication keeps an app to one instance,
+and how it serves its actions on the bus. Checked on hardware where a run below says so;
+MPRIS is from its specification, UPower also from its source, GApplication from its
+documentation and source, and the key path is only as understood, not traced.
 
-The app acts on these in `volume`, `media` and `notify`:
+The app acts on these in `volume`, `media`, `notify` and `ui::connect`:
 [app/volume.md](../../app/volume.md), [app/media-pause.md](../../app/media-pause.md),
 [app/notifications.md](../../app/notifications.md). On GApplication's, at its startup:
-[app/from-linuxpods.md](../../app/from-linuxpods.md#when).
+[app/from-linuxpods.md](../../app/from-linuxpods.md#when); on its actions, for a connect:
+[app/ui.md](../../app/ui.md#the-connect-banner),
+[app/bluez.md](../../app/bluez.md#connecting-a-pair).
 
 ## The volume
 
@@ -67,7 +69,8 @@ below), and true of every battery that bluetoothd reports as `Battery1`:
 
 ## GApplication
 
-From GLib 2.90.1's GApplication documentation (`gio/gapplication.c`), not a run here:
+From GLib 2.90.1's GApplication documentation (`gio/gapplication.c`) and the sources
+named, not a run here:
 
 - **One instance per application ID, per session.** The ID is claimed as a well-known
   name on the user's session bus. A second launch with the same ID finds it taken: it
@@ -76,6 +79,15 @@ From GLib 2.90.1's GApplication documentation (`gio/gapplication.c`), not a run 
   second launch never emits it.
 - **Two IDs are two applications.** Nothing in GApplication keeps an app under one ID
   from running beside the same program under another.
+- **Its actions are on the session bus.** GApplication exports its action group at its
+  object path (`g_dbus_connection_export_action_group`, `gio/gapplicationimpl-dbus.c`) as
+  `org.gtk.Actions` (`gio/gactiongroupexporter.c`), so any process on the session bus can
+  activate one.
+- **An activation says nothing of who asked.** `GSimpleAction::activate` carries only
+  the action and its parameter (`gio/gsimpleaction.c`).
+- **In the primary instance, an activation runs before the call returns.**
+  `g_application_activate_action` hands it straight to the local action group; only a
+  remote instance sends it over D-Bus (`gio/gapplication.c`, GLib 2.90.1).
 
 ## Runs
 

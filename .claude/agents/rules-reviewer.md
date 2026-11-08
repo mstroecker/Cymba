@@ -81,7 +81,10 @@ carries a GTK object toward tokio.
   re-checked against the stored IRK on every hit, taken alone and never across an await;
   and what the keystore and the readings file last saved (`Persistence::saved`,
   `SavedReadings::saved`), a copy of the disk that is never shown and changes only with a
-  save that succeeded.
+  save that succeeded; and `Inner::device_names` and `Inner::attached`, attachment's view
+  of BlueZ - its paired devices' names, and the pairs it has attached - each replaced
+  whole by `set_device_names` or `set_attached` and broadcast under the write lock,
+  `attached` emptied when attachment stops.
   Flag the firmware version dropped with the link or pruned with `BLE_CACHE_TTL`, and
   anything else of AAP kept beside it;
 - a read loop or command that finds its link by MAC alone. Writes from a loop or a
@@ -169,7 +172,8 @@ accepted exception), or a captured advertisement committed together with the key
 
 **UI.**
 - A widget updated from anywhere but the snapshot stream, or for the scanning hint the
-  scanner's (`ScanControl::state`) - a button handler setting a label from a command's
+  scanner's (`ScanControl::state`), or for the connect banner's title and button and the
+  header's spinner `connect::Connecting` - a button handler setting a label from a command's
   result, or the hint's pause button showing the pause before the scanner reports it,
   say. A setting is not device state: its switch bound to
   an app action and showing that action's state is fine, as Battery notifications' is with
