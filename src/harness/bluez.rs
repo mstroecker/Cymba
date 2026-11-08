@@ -24,7 +24,9 @@
 //! - `MediaTransport1` under a connected device while audio is set up with
 //!   it - see [Audio](#audio)
 //!
-//! Nothing else of bluetoothd is here - no pairing, no `Device1.Connect`, no
+//! - `Device1.Connect` on a paired device - see [Connecting](#connecting)
+//!
+//! Nothing else of bluetoothd is here - no pairing, no `Disconnect`, no
 //! agent - since the app uses none of it.
 //!
 //! # Adapters coming and going
@@ -82,6 +84,49 @@
 //!   still running in the controller (#123): `InProgress`, the very error a
 //!   client that discovers already gets, and the client not taken on. It
 //!   outlasts a restart, as that discovery does, until cleared.
+//!
+//! # Connecting
+//!
+//! `Device1.Connect` on a paired device pages it, with some of the refusals
+//! of BlueZ 5.87's `device_connect_profiles`, and the page timeout from
+//! `device_profile_connected`, in that order (`src/device.c`,
+//! `src/error.c`):
+//!
+//! - a connect to it under way: `org.bluez.Error.InProgress`,
+//!   `br-connection-busy`;
+//! - its adapter off: `org.bluez.Error.NotReady`,
+//!   `br-connection-adapter-not-powered`;
+//! - the pair not answering the page: `org.bluez.Error.Failed`,
+//!   `br-connection-page-timeout` - see [`FakeBluez::set_answers_page`]. In
+//!   the fake world that is both pods in the closed case, the one place a
+//!   fake pair is out of reach - a guess of the fake's: bluetoothd left a
+//!   `Connect` to pods in the closed case unanswered for 30 s, until the
+//!   app's limit ended the call, and what it replies in the end is open
+//!   (`docs/protocol/linux/bluez.md#device1connect`).
+//!
+//! `dev_connect`'s own refusal, `InProgress` while bonding, never comes: the
+//! fake does no pairing. Nor do `Failed`, `br-connection-sdp-search`, and an
+//! error of a profile's connect: the fake searches no services and connects
+//! no profile; nor `org.bluez.Error.BREDR.ProfileUnavailable`, for a device
+//! with nothing left to connect and none connected: the fake connects no
+//! profile.
+//!
+//! Otherwise the pair connects as [`super::World::connect`] connects it, or
+//! [`FakeBluez::set_connected`] with no world, and `Connect` succeeds - one
+//! to a pair connected already too. Two departures from bluetoothd, which
+//! answers only once the page and the profiles it connects after it are done
+//! or have failed - read in its source, its reply after `Connected` seen on
+//! a Pro 3 (`docs/protocol/linux/bluez.md#runs`):
+//!
+//! - **A refusal at once.** The fake answers at once; a real page timeout
+//!   takes longer; how long is open
+//!   (`docs/protocol/linux/bluez.md#open-questions`).
+//! - **Success before `Connected`.** The fake answers once the connect is
+//!   under way, before it signals `Connected=true`: the device's object is
+//!   locked while its method runs, and connecting changes it
+//!   (`docs/protocol/linux/zbus.md#the-object-servers-dispatch`).
+//!   [`FakeBluez::set_page_delay`] holds the answer, and the connect after
+//!   it, for a page that takes time.
 //!
 //! # Advertisements
 //!
@@ -229,7 +274,9 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -383,6 +430,13 @@ fn check_filter(filter: &HashMap<String, OwnedValue>) -> Result<(), String> {
     Ok(())
 }
 
+/// A page under way: the pair connecting - see [`FakeBluez::set_pager`].
+pub type Page = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
+
+/// What a paired device's `Connect` starts once bluetoothd would page: the
+/// pair at an address connecting - see [`FakeBluez::set_pager`].
+pub type Pager = Arc<dyn Fn(Address) -> Page + Send + Sync>;
+
 /// A fake `org.bluez`. Clones share it.
 #[derive(Clone)]
 pub struct FakeBluez {
@@ -460,6 +514,16 @@ struct State {
     audio: HashMap<Address, Audio>,
     /// Every volume a client set on a transport, by device, with when.
     volume_sets: HashMap<Address, Vec<(Instant, u16)>>,
+    /// What `Device1.Connect` starts - see [`FakeBluez::set_pager`]. `None`
+    /// connects the pair by [`FakeBluez::set_connected`].
+    pager: Option<Pager>,
+    /// The pairs a `Connect` is paging, until the page is done.
+    paging: HashSet<Address>,
+    /// The pairs that answer no page - see [`FakeBluez::set_answers_page`].
+    unanswered: HashSet<Address>,
+    /// How long each pair's `Connect` holds its answer to a page under way -
+    /// see [`FakeBluez::set_page_delay`].
+    page_delays: HashMap<Address, Duration>,
 }
 
 /// A device's audio transports - see [Audio](#audio).
@@ -745,7 +809,123 @@ impl State {
     }
 }
 
+/// A [`FakeBluez`] that a paired device's object holds, so that its
+/// `Connect` reaches the fake without the fake's objects keeping it alive.
+#[derive(Clone)]
+struct WeakBluez {
+    conn: Weak<Mutex<Connection>>,
+    state: Weak<Mutex<State>>,
+    exports: Weak<tokio::sync::Mutex<()>>,
+    carrying: Weak<tokio::sync::Mutex<()>>,
+    hearing: Weak<tokio::sync::Mutex<()>>,
+}
+
+impl WeakBluez {
+    fn upgrade(&self) -> Option<FakeBluez> {
+        Some(FakeBluez {
+            conn: self.conn.upgrade()?,
+            state: self.state.upgrade()?,
+            exports: self.exports.upgrade()?,
+            carrying: self.carrying.upgrade()?,
+            hearing: self.hearing.upgrade()?,
+        })
+    }
+}
+
 impl FakeBluez {
+    fn downgrade(&self) -> WeakBluez {
+        WeakBluez {
+            conn: Arc::downgrade(&self.conn),
+            state: Arc::downgrade(&self.state),
+            exports: Arc::downgrade(&self.exports),
+            carrying: Arc::downgrade(&self.carrying),
+            hearing: Arc::downgrade(&self.hearing),
+        }
+    }
+
+    /// Has `Device1.Connect` connect a pair through `pager` once it pages:
+    /// the fake world's [`super::World::connect`]. See
+    /// [Connecting](#connecting).
+    pub fn set_pager(&self, pager: Pager) {
+        self.state().pager = Some(pager);
+    }
+
+    /// Whether the pair at `address` answers a page: one that does not has
+    /// its `Connect` refused as a page timeout. Every pair answers until
+    /// told otherwise; the fake world tells, as its pods go into the closed
+    /// case and out.
+    pub fn set_answers_page(&self, address: Address, answers: bool) {
+        let mut state = self.state();
+        if answers {
+            state.unanswered.remove(&address);
+        } else {
+            state.unanswered.insert(address);
+        }
+    }
+
+    /// Has the pair at `address` answer a `Connect` that pages it `delay`
+    /// after the call, and connect only then, as a page that takes time; a
+    /// zero delay answers at once, as every pair does until told otherwise.
+    /// Refusals still come at once.
+    pub fn set_page_delay(&self, address: Address, delay: Duration) {
+        let mut state = self.state();
+        if delay.is_zero() {
+            state.page_delays.remove(&address);
+        } else {
+            state.page_delays.insert(address, delay);
+        }
+    }
+
+    /// Pages the paired device at `address`, as its `Connect` asks - see
+    /// [Connecting](#connecting). Back once the page is under way, with how
+    /// long `Connect` holds its answer - see [`FakeBluez::set_page_delay`] -
+    /// or with bluetoothd's refusal, in the order `device_connect_profiles`
+    /// checks. Never waits: the device's object is locked while its method
+    /// runs (`docs/protocol/linux/zbus.md#the-object-servers-dispatch`), so
+    /// the page itself starts only once the answer is held no longer.
+    fn page(&self, address: Address) -> Result<Duration, BluezError> {
+        let pager = {
+            let mut state = self.state();
+            let pairing = state
+                .paired
+                .get(&address)
+                .ok_or_else(|| BluezError::DoesNotExist(format!("no paired device {address}")))?;
+            if state.paging.contains(&address) {
+                return Err(BluezError::InProgress("br-connection-busy".into()));
+            }
+            if !state.powered.contains(&pairing.adapter) {
+                return Err(BluezError::NotReady(
+                    "br-connection-adapter-not-powered".into(),
+                ));
+            }
+            if state.unanswered.contains(&address) {
+                tracing::info!("fake BlueZ: {address} did not answer the page");
+                return Err(BluezError::Failed("br-connection-page-timeout".into()));
+            }
+            state.paging.insert(address);
+            let delay = state.page_delays.get(&address).copied().unwrap_or_default();
+            (state.pager.clone(), delay)
+        };
+        let (pager, delay) = pager;
+        let page = match pager {
+            Some(pager) => pager(address),
+            None => {
+                let bluez = self.clone();
+                Box::pin(async move { bluez.set_connected(address, true).await }) as Page
+            }
+        };
+        tracing::info!("fake BlueZ: paging {address}");
+        let bluez = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            if let Err(e) = page.await {
+                tracing::warn!("fake BlueZ: failed to connect {address}: {e:#}");
+            }
+            bluez.state().paging.remove(&address);
+        });
+        Ok(delay)
+    }
+
     /// Serves the ObjectManager on a connection of its own to the bus at
     /// `bus`, with no adapter yet - see [`FakeBluez::add_adapter`]. The name
     /// comes later, from [`FakeBluez::publish`], so that adapters and devices
@@ -1068,6 +1248,7 @@ impl FakeBluez {
             devices.push((
                 path,
                 PairedDevice {
+                    bluez: self.downgrade(),
                     address,
                     adapter: device.adapter.clone(),
                     name: device.name.clone(),
@@ -1169,6 +1350,7 @@ impl FakeBluez {
     /// Puts a paired device's object under its adapter, disconnected.
     async fn export_paired(&self, adapter: &str, address: Address, names: Names) -> Result<()> {
         let device = PairedDevice {
+            bluez: self.downgrade(),
             address,
             adapter: adapter_object(adapter),
             name: names.name,
@@ -2712,6 +2894,8 @@ impl Names {
 
 /// A pair paired with an adapter, at its real address.
 struct PairedDevice {
+    /// Where its `Connect` pages.
+    bluez: WeakBluez,
     address: Address,
     adapter: OwnedObjectPath,
     /// The pair's own name.
@@ -2727,6 +2911,19 @@ struct PairedDevice {
 
 #[interface(name = "org.bluez.Device1")]
 impl PairedDevice {
+    /// Pages the pair - see [Connecting](#connecting).
+    async fn connect(&self) -> Result<(), BluezError> {
+        let bluez = self
+            .bluez
+            .upgrade()
+            .ok_or_else(|| BluezError::Failed("the fake BlueZ is gone".into()))?;
+        let delay = bluez.page(self.address)?;
+        // Held with the device's object locked, as the answer is this
+        // method's return: the page's connect waits for it.
+        tokio::time::sleep(delay).await;
+        Ok(())
+    }
+
     #[zbus(property)]
     fn address(&self) -> String {
         self.address.to_string()

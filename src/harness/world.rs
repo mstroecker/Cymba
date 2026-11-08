@@ -50,7 +50,7 @@
 //! | `RestartBluez()` | bluetoothd restarting as after a crash, under a new unique name: `NameOwnerChanged` twice, and every client's discovery, battery providers and advertisement monitors forgotten. Nothing is announced again, as a real one would - see [`FakeBluez::restart`] |
 //! | `SetExperimental(b on)` | Turns bluetoothd's experimental interfaces on or off: every adapter offers advertisement monitors, or no longer does, at once - follow it with `RestartBluez`, as a real bluetoothd reads the setting as it starts. Off unless `fakepods --experimental` - see [`FakeBluez::set_experimental`] |
 //! | `ReleaseMonitors(s adapter)` | Releases every advertisement monitor registered with the adapter, and forgets their registrations - a bluetoothd that releases one keeps its registration: see [`FakeBluez::release_monitors`] |
-//! | `Connect(s mac)` | Connects them to the host, which the app takes up; their services are resolved 4 s later, as bluetoothd signals - see [`FakeBluez::set_connected`] |
+//! | `Connect(s mac)` | Connects them to the host, which the app takes up; their services are resolved 4 s later, as bluetoothd signals - see [`FakeBluez::set_connected`]. The app's own `Device1.Connect` connects them the same way, unless both pods are in the closed case, where the fake guesses they answer no page |
 //! | `Disconnect(s mac)` | Disconnects them, which takes the AAP connection along, after BlueZ's `Connected=false` |
 //! | `SetBattery(s mac, s part, y level)` | `left`, `right` or `case`; a level above 100 is unknown |
 //! | `SetInEar(s mac, s pod, b in_ear)` | `left` or `right` into an ear, out of the case, or out of the ear; over AAP an ear report follows - see [`Pods::set_in_ear`] |
@@ -66,6 +66,7 @@
 //! | `SetCall(s mac, b on)` | A call begins or ends on a connected pair: A2DP `idle`, and back after - see [`FakeBluez::set_call`] |
 //! | `SetVolume(s mac, q volume)` | The user sets the pair's A2DP volume, 0 to 127: GNOME's slider, say; with no transport, the volume the next starts at |
 //! | `SetVolumeAnswer(s mac, u delay_ms, b to_even)` | The pair answers a volume the app sets that long later, rounded down to even if asked, as bluetoothd has real pods answer - see [`FakeBluez::set_volume_answer`] |
+//! | `SetPageDelay(s mac, u delay_ms)` | The pair's `Device1.Connect` answers that long after the call, and connects then, as a page that takes time; 0 answers at once - see [`FakeBluez::set_page_delay`] |
 //! | `Volume(s mac) → q` | The volume of the pair's A2DP transport; fails without one |
 //! | `VolumeSets(s mac) → aq` | Every volume the app set on the pair's transports, in order |
 //! | `SetQuirk(s mac, s quirk, v value)` | Sets one of [`Quirks`] by its field name, the durations by theirs with `_ms` - `echo_delay_ms`, `handshake_delay_ms`, `report_delay_ms`, `dump_delay_ms`, `stale_report_ms` - in milliseconds, a `stale_report_ms` of 0 for none |
@@ -224,6 +225,13 @@ impl World {
             world: world.clone(),
         };
         world.0.control.object_server().at(PATH, control).await?;
+        // `Device1.Connect` connects a pair as `World::connect` does. Held
+        // weakly: the fake BlueZ is the world's.
+        let weak = Arc::downgrade(&world.0);
+        world.0.bluez.set_pager(Arc::new(move |mac| {
+            let world = weak.upgrade().map(World);
+            Box::pin(async move { world.context("the world is gone")?.connect(mac).await })
+        }));
         tokio::spawn(world.clone().advertise());
         tokio::spawn(world.clone().keep_time());
         Ok(world)
@@ -418,8 +426,15 @@ impl World {
 
     /// Carries out what a pair's model has due by `now`: packets and a
     /// hang-up on its AAP connection, and a link it drops - BlueZ told of it,
-    /// then the connection closed.
+    /// then the connection closed. Tells the fake BlueZ, too, whether the
+    /// pair answers a page: not with both pods in the closed case, a guess of
+    /// the fake's.
     async fn flush(&self, mac: Address, pair: &mut Pair, now: Duration) {
+        // Told here, after every change, for `Device1.Connect` to answer
+        // without waiting for the pairs.
+        self.0
+            .bluez
+            .set_answers_page(mac, !pair.pods.in_closed_case());
         for action in pair.pods.poll(now) {
             if action != Action::Disconnect {
                 pair.carry_out(action);
@@ -478,6 +493,16 @@ impl World {
     /// [`FakeBluez::set_volume_answer`].
     pub fn set_volume_answer(&self, mac: Address, answer: VolumeAnswer) -> Result<()> {
         self.0.bluez.set_volume_answer(mac, answer)
+    }
+
+    /// Has a pair's `Device1.Connect` answer `delay` after the call - see
+    /// [`FakeBluez::set_page_delay`].
+    pub async fn set_page_delay(&self, mac: Address, delay: Duration) -> Result<()> {
+        if !self.0.pairs.lock().await.contains_key(&mac) {
+            return Err(no_pair(mac));
+        }
+        self.0.bluez.set_page_delay(mac, delay);
+        Ok(())
     }
 
     /// The volume of a pair's A2DP transport, `None` without one.
@@ -1020,6 +1045,14 @@ impl FakeWorld1 {
         };
         self.world
             .set_volume_answer(parse_mac(mac)?, answer)
+            .map_err(failed)
+    }
+
+    async fn set_page_delay(&self, mac: &str, delay_ms: u32) -> fdo::Result<()> {
+        let delay = Duration::from_millis(delay_ms.into());
+        self.world
+            .set_page_delay(parse_mac(mac)?, delay)
+            .await
             .map_err(failed)
     }
 

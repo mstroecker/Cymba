@@ -885,6 +885,12 @@ impl Pods {
         self.color = color;
     }
 
+    /// Whether both pods are in the closed case: the pair drops its link
+    /// (#142), and, a guess of the fake's, answers no page.
+    pub fn in_closed_case(&self) -> bool {
+        self.left.in_case && self.right.in_case && !self.lid_open
+    }
+
     /// Connects the pair to a host, or disconnects it - this one or another,
     /// such as a phone. A connected fake reports itself idle in byte 8 of its
     /// advertisements. Disconnecting takes an open AAP connection with it: the
@@ -1324,7 +1330,7 @@ impl Pods {
     /// [`Action::Disconnect`], alone.
     pub fn poll(&mut self, now: Duration) -> Vec<Action> {
         self.see_lid(now);
-        if self.connected && self.left.in_case && self.right.in_case && !self.lid_open {
+        if self.connected && self.in_closed_case() {
             // Both pods in the closed case: the pods drop the link (#142).
             self.connected = false;
             self.end_session();
