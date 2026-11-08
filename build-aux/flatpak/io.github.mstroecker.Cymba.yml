@@ -18,6 +18,12 @@ finish-args:
   # Tray via StatusNotifierItem. No --own-name: in a sandbox ksni registers
   # under the unique connection name instead.
   - --talk-name=org.kde.StatusNotifierWatcher
+  # Pausing the media when a pod leaves an ear: every MPRIS player, called at
+  # its unique name, which the proxy lets through for a name it may talk to
+  - --talk-name=org.mpris.MediaPlayer2.*
+  # Whether the user is at the desktop, for the nearby notification: the
+  # login session's hints, and each resume from sleep
+  - --system-talk-name=org.freedesktop.login1
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
   env:
