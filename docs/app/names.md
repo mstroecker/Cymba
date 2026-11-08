@@ -39,8 +39,8 @@ it, else BlueZ's alias.
 
 ### Everywhere else
 
-The switcher in the header bar and a low battery notification name a pair as the rest of
-the desktop will once BlueZ has caught up (`Snapshot::display_name`):
+The switcher in the header bar, a low battery notification and a nearby notification name
+a pair as the rest of the desktop will once BlueZ has caught up (`Snapshot::display_name`):
 
 1. an alias set in BlueZ;
 2. else the pods' name, where the link has it;

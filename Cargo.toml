@@ -76,6 +76,8 @@ glib-build-tools = "0.22"
 
 [dev-dependencies]
 tempfile = "3"
+# Paused time, for tests that wait on tokio's clock
+tokio = { version = "1", features = ["test-util"] }
 
 # Lints for every target. Unsafe code is denied, so a new block has to be
 # allowed on purpose, beside the reason it needs it. A stray dbg! warns, and

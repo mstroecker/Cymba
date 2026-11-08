@@ -6,13 +6,15 @@
 //! whose pause goes back to the scanner on a third - see `ScanControl`;
 //! commands go to the AirPods on their link's queue - see
 //! `Coordinator::command` - the switch for pausing on the ears to the media
-//! task on another watch, and the tray's window commands, the low battery
-//! notifications and a quit asked for by SIGTERM or SIGINT to the GTK main
-//! context on async channels.
+//! task on another watch, whether the user is at the desktop and the
+//! resumes from sleep to the nearby notifier on another, as one value, and
+//! the tray's window commands, the low battery and nearby notifications and
+//! a quit asked for by SIGTERM or SIGINT to the GTK main context on async
+//! channels.
 
 use cymba::{
-    APP_ID, attachment, ble, indicator, media, migrate, notify, podstate, readings, settings, ui,
-    volume,
+    APP_ID, attachment, ble, indicator, media, migrate, nearby, notify, podstate, presence,
+    readings, settings, ui, volume,
 };
 
 use std::cell::{OnceCell, RefCell};
@@ -113,7 +115,7 @@ struct Primary {
 impl Primary {
     /// Starts the background workers. Between them they reach well outside the
     /// process - BLE scanning, the BlueZ battery provider, an AAP link to every
-    /// connected pair, the tray icon, the low battery notifications - so there
+    /// connected pair, the tray icon, the notifications - so there
     /// must only ever be one set.
     fn start(
         app: &adw::Application,
@@ -122,6 +124,12 @@ impl Primary {
         runtime: tokio::runtime::Handle,
     ) -> Self {
         let (window_tx, window_rx) = async_channel::unbounded::<WindowCommand>();
+
+        // Taken before scanning starts, while it still holds the readings an
+        // earlier run saved, which the nearby notifier measures a pair's
+        // first live advertisement from.
+        let mut nearby_updates = coordinator.subscribe();
+        let first = nearby_updates.borrow_and_update().clone();
 
         // Kept across the scanner's restarts, for the window's scanning hint
         // to read and pause it by (#189).
@@ -155,7 +163,16 @@ impl Primary {
         // context, where the application is.
         let (notices_tx, notices_rx) = async_channel::unbounded();
         runtime.spawn(notify::run(coordinator.clone(), notices_tx));
-        ui::deliver_notifications(app, notices_rx, settings);
+        ui::deliver_notifications(app, notices_rx, settings.clone());
+        // From logind on the system bus, in one value: whether the user is at
+        // the desktop, for the nearby notifier to hold a return for - at the
+        // desktop until logind says otherwise - and each resume from sleep,
+        // counted, with when the last sleep began, for it to take as a return.
+        let (presence_tx, presence) = tokio::sync::watch::channel(presence::Presence::default());
+        runtime.spawn(presence::run(presence_tx));
+        let (nearby_tx, nearby_rx) = async_channel::unbounded();
+        runtime.spawn(nearby::run(first, nearby_updates, presence, nearby_tx));
+        ui::deliver_nearby(app, nearby_rx, settings);
         runtime.spawn(tray_task(
             coordinator.clone(),
             Arc::new(AppActions {

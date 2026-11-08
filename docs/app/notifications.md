@@ -3,7 +3,8 @@
 When Cymba warns of a low battery, and why it has to (#126). GNOME never warns of a
 low Bluetooth battery: UPower gives `Battery1` batteries no warning level
 ([protocol/linux/desktop.md](../protocol/linux/desktop.md#upower)). So the app warns
-itself.
+itself. The nearby notification is sent the same way:
+[nearby.md](nearby.md).
 
 ## What is warned about
 

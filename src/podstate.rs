@@ -46,7 +46,7 @@
 //! with no stored IRK: only those that resolve, a bounded few
 //! ([`ResolvedAddresses`]).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::convert::Infallible;
 use std::future::Future;
 #[cfg(feature = "harness")]
@@ -82,7 +82,7 @@ pub const BLE_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 /// How long before `now` a reading `heard` then was heard, on the wall clock.
 ///
 /// The wall clock, not [`Instant`]: on Linux that is `CLOCK_MONOTONIC`, which
-/// stands still while the machine sleeps, so a reading from before a night's
+/// does not count a suspend (`docs/protocol/linux/clocks.md`), so a reading from before a night's
 /// suspend would read "30 min ago" the next morning and expire hours late -
 /// and a reading kept across a relaunch ([`crate::readings`]) needs a time
 /// that means something to the next run (#170).
@@ -304,6 +304,24 @@ pub struct PodState {
     /// kept when it reported none with bit 4 set.
     pub lid_open: Option<bool>,
 
+    /// Whether a pod is out of the case - worn, in hand or on the table - as
+    /// the advertisement behind a BLE reading says: both pods in the case is
+    /// status bit 2 (`docs/protocol/ble/proximity-pairing.md#byte-3-status-byte`),
+    /// set with a pod worn in the #184 run, which is open (`docs/protocol/ble/proximity-pairing.md#open-questions`).
+    /// `None` over AAP and for a restored reading: only a live advertisement
+    /// tells it.
+    pub out_of_case: Option<bool>,
+
+    /// The last three bytes of a host's address, as the advertisement behind
+    /// a BLE reading says: decrypted bytes 4-6,
+    /// seen on one Pro 3 and unconfirmed
+    /// (`docs/protocol/ble/proximity-pairing.md#decrypted-format`); whether
+    /// they name the host last used or the host connected is open
+    /// (`docs/protocol/ble/proximity-pairing.md#open-questions`). `None`
+    /// over AAP and for a restored reading: only a live advertisement tells
+    /// it.
+    pub last_host: Option<[u8; 3]>,
+
     /// Decoded with `ble::decode_connection_state`.
     ///
     /// Only advertisements carry it, along with the lid.
@@ -379,6 +397,8 @@ impl PodState {
             left_in_ear: None,
             right_in_ear: None,
             lid_open: None,
+            out_of_case: None,
+            last_host: None,
             connection_state: None,
             noise_mode: None,
             conversation_awareness: None,
@@ -434,6 +454,11 @@ pub struct Snapshot {
     /// reported this run - kept after the link goes, see
     /// [`Inner::firmware_versions`]. A pair with no link this run has none.
     pub firmware_versions: HashMap<Address, FirmwareVersion>,
+    /// This computer's Bluetooth adapters' addresses, as attachment last
+    /// read BlueZ's adapters - see `bluez::AdapterSet::addresses`. `None`
+    /// while they are not known: attachment not running, BlueZ off the bus,
+    /// or an adapter whose address could not be read.
+    pub adapter_addresses: Option<BTreeSet<Address>>,
 }
 
 impl Snapshot {
@@ -454,7 +479,7 @@ impl Snapshot {
     }
 
     /// The name the app gives `mac` where it names a pair - the switcher, a
-    /// low battery notification: the one the rest of the desktop shows once
+    /// low battery or nearby notification: the one the rest of the desktop shows once
     /// BlueZ has caught up. An alias set in BlueZ first, as this computer
     /// shows it whatever the pods are called; else the pods' own name, where
     /// the link has reported it or a rename recorded it - BlueZ's `Name`, and
@@ -551,7 +576,8 @@ struct Entry {
 impl Entry {
     /// The entry for a reading an earlier run saved: what an advertisement
     /// would have left, but for what was stale by the time it loaded -
-    /// in-ear, the lid, the connection state - and the address it came from.
+    /// in-ear, the lid, whether a pod is out of the case, the host the
+    /// advertisement names, the connection state - and the address it came from.
     fn restored(reading: &Reading) -> Self {
         Self {
             state: PodState {
@@ -565,6 +591,8 @@ impl Entry {
                 left_in_ear: None,
                 right_in_ear: None,
                 lid_open: None,
+                out_of_case: None,
+                last_host: None,
                 connection_state: None,
                 noise_mode: None,
                 conversation_awareness: None,
@@ -682,6 +710,9 @@ struct Inner {
     /// not. Never pruned, unlike `ble`: bounded by the pairs linked to,
     /// which are attached AirPods alone.
     firmware_versions: HashMap<Address, FirmwareVersion>,
+    /// This computer's adapters' addresses - see
+    /// [`Snapshot::adapter_addresses`].
+    adapter_addresses: Option<BTreeSet<Address>>,
 }
 
 impl Inner {
@@ -828,6 +859,7 @@ impl Inner {
             device_names: self.device_names.clone(),
             attached: self.attached.clone(),
             firmware_versions: self.firmware_versions.clone(),
+            adapter_addresses: self.adapter_addresses.clone(),
         }
     }
 }
@@ -1162,6 +1194,7 @@ impl Coordinator {
             device_names: HashMap::new(),
             attached: HashSet::new(),
             firmware_versions: HashMap::new(),
+            adapter_addresses: None,
         };
         let (updates, _) = watch::channel(inner.snapshot());
 
@@ -1280,7 +1313,7 @@ impl Coordinator {
     /// snapshot is sent only when they differ - attachment re-reads them on
     /// every connection event BlueZ confirms and every adapter change while BlueZ is on the bus, and
     /// rebroadcasting an identical map would wake the UI,
-    /// tray, attachment and notifier for nothing.
+    /// tray, attachment and notifiers for nothing.
     pub(crate) async fn set_device_names(&self, names: HashMap<Address, DeviceNames>) {
         let mut inner = self.inner.write().await;
         if inner.device_names == names {
@@ -1302,6 +1335,18 @@ impl Coordinator {
         self.broadcast(&inner);
     }
 
+    /// Replaces this computer's adapters' addresses, and broadcasts if they
+    /// changed: attachment tells them after every change to BlueZ's
+    /// adapters, and `None` when it stops.
+    pub(crate) async fn set_adapter_addresses(&self, addresses: Option<BTreeSet<Address>>) {
+        let mut inner = self.inner.write().await;
+        if inner.adapter_addresses == addresses {
+            return;
+        }
+        inner.adapter_addresses = addresses;
+        self.broadcast(&inner);
+    }
+
     /// Number of devices a snapshot would show.
     pub async fn device_count(&self) -> usize {
         self.inner.read().await.snapshot().states.len()
@@ -1309,9 +1354,9 @@ impl Coordinator {
 
     /// Drops expired BLE readings, broadcasting if any went.
     ///
-    /// Pruning also happens on every advertisement, but a cached reading has to
-    /// expire even when nothing is advertising at all - that is exactly when it is
-    /// on show.
+    /// Pruning also happens on every advertisement that counts, but a cached
+    /// reading has to expire even when nothing is advertising at all - that is
+    /// exactly when it is on show.
     pub async fn expire(&self) {
         let mut inner = self.inner.write().await;
         if inner.prune(SystemTime::now()) {
@@ -1485,6 +1530,8 @@ impl Coordinator {
             left_in_ear: Some(data.left_in_ear),
             right_in_ear: Some(data.right_in_ear),
             lid_open: data.lid_open,
+            out_of_case: Some(!data.both_in_case),
+            last_host: data.last_host,
             connection_state: Some(data.connection_state),
             // BLE carries no noise control mode; `snapshot` attaches the one
             // reported over AAP for the connected device. Nor Conversation
@@ -1706,7 +1753,7 @@ impl Coordinator {
                 self.tell_speech(SpeechEvent::LinkGone { mac: mac_addr });
                 self.tell_ears(EarEvent::LinkGone { mac: mac_addr });
             }
-            // Without this the UI, tray, attachment and notifier never hear
+            // Without this the UI, tray, attachment and notifiers never hear
             // that the connection ended and keep showing the last AAP reading.
             self.broadcast(&inner);
         }
@@ -1826,6 +1873,8 @@ impl Coordinator {
             left_in_ear: None,
             right_in_ear: None,
             lid_open: None,
+            out_of_case: None,
+            last_host: None,
             connection_state: None,
             noise_mode: None,
             conversation_awareness: None,
@@ -1952,7 +2001,7 @@ impl Coordinator {
     /// it changed.
     ///
     /// The startup dump repeats, and an unchanged mode is not worth waking the
-    /// window, tray, attachment and notifier for. A stale report of the mode a
+    /// window, tray, attachment and notifiers for. A stale report of the mode a
     /// command just replaced is not taken - see [`ModeState`].
     async fn handle_noise_mode(
         &self,
@@ -2381,6 +2430,7 @@ mod tests {
             device_names: HashMap::new(),
             attached: HashSet::new(),
             firmware_versions: HashMap::new(),
+            adapter_addresses: None,
         }
     }
 
@@ -3177,7 +3227,7 @@ mod tests {
     }
 
     /// A level, or a setting, the same as the last is not worth waking the
-    /// window, tray, attachment and notifier for.
+    /// window, tray, attachment and notifiers for.
     #[tokio::test]
     async fn an_unchanged_level_or_setting_is_not_broadcast() {
         let mut inner = inner_with(vec![]);
@@ -3317,12 +3367,16 @@ mod tests {
         color: 0x01,
     };
 
+    /// The host [`advertisement`]'s decrypted bytes 4-6 name.
+    const LAST_HOST: [u8; 3] = [0x53, 0x00, 0xF0];
+
     /// [`advertisement`], with the left pod at `left`%.
     fn advertisement_with_left(left: u8) -> ProximityData {
         use aes::cipher::{Block, BlockCipherEncrypt, KeyInit};
 
         let mut plain = [0u8; 16];
         plain[1..4].copy_from_slice(&[left, 80, 50]); // left, right, case
+        plain[4..7].copy_from_slice(&LAST_HOST);
         let mut block = Block::<aes::Aes128>::try_from(&plain[..]).unwrap();
         aes::Aes128::new_from_slice(&KEY)
             .unwrap()
@@ -3337,6 +3391,26 @@ mod tests {
             raw_data,
             ..Default::default()
         }
+    }
+
+    /// A BLE reading names the host its advertisement's decrypted bytes 4-6
+    /// name; the link's reading, once it has one, names none.
+    #[tokio::test]
+    async fn only_a_ble_reading_names_the_last_host() {
+        let (coordinator, client, _dir) = linked();
+        coordinator
+            .handle_advertisement(advertisement(), BLE_MAC)
+            .await;
+        let state = coordinator.subscribe().borrow().states[&MAC].clone();
+        assert_eq!(state.source, DataSource::Ble);
+        assert_eq!(state.last_host, Some(LAST_HOST));
+
+        coordinator
+            .handle_battery_info(battery_packet(83), MAC, &client)
+            .await;
+        let state = coordinator.subscribe().borrow().states[&MAC].clone();
+        assert_eq!(state.source, DataSource::Aap);
+        assert_eq!(state.last_host, None);
     }
 
     /// Regression (#44): a battery packet that arrived before any advertisement
@@ -3507,6 +3581,7 @@ mod tests {
             secondary_charging: other.1,
             case_battery: case,
             case_charging: false,
+            last_host: [0; 3],
             mac_suffix: ZEROED_SUFFIX,
             tail: [u8::from(in_case); 4],
         };

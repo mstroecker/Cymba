@@ -32,7 +32,7 @@
 //!
 //! Every key is generated at runtime, by the fake pairs; none is in the source.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -3513,6 +3513,35 @@ async fn an_adapter_plugged_in_gets_a_provider_and_unplugged_takes_it_along() {
     app.attach(OTHER).await;
     fixture.until_batteries_on(HCI1, &second).await;
     fixture.until_batteries_on(HCI0, &first).await;
+}
+
+/// This computer's adapters' addresses reach the snapshot: the one read at
+/// startup, one plugged in beside it, announced, and the first alone once
+/// that is unplugged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_snapshot_has_every_adapters_address() {
+    let fixture = Fixture::new(&[(PAIR, PRO_3, PAIR_LEVELS)]).await;
+    let mut app = fixture.start_app().await;
+    // The fake BlueZ's first and second adapters, as `harness::bluez`
+    // numbers them.
+    let hci0 = Address::new([0x00, 0x00, 0x5E, 0x00, 0x53, 0xF0]);
+    let hci1 = Address::new([0x00, 0x00, 0x5E, 0x00, 0x53, 0xF1]);
+    let first = Some(BTreeSet::from([hci0]));
+    app.until("the first adapter's address", |s| {
+        s.adapter_addresses == first
+    })
+    .await;
+
+    fixture.world.add_adapter(HCI1, true).await.unwrap();
+    let both = Some(BTreeSet::from([hci0, hci1]));
+    app.until("both adapters' addresses", |s| s.adapter_addresses == both)
+        .await;
+
+    fixture.world.remove_adapter(HCI1).await.unwrap();
+    app.until("the first adapter's alone", |s| {
+        s.adapter_addresses == first
+    })
+    .await;
 }
 
 /// bluetoothd restarting forgets every client's discovery and battery
