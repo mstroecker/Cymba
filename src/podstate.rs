@@ -46,7 +46,7 @@
 //! with no stored IRK: only those that resolve, a bounded few
 //! ([`ResolvedAddresses`]).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::future::Future;
 #[cfg(feature = "harness")]
@@ -422,9 +422,14 @@ pub struct Snapshot {
     pub known_keys: Vec<Address>,
     /// BlueZ's names by MAC: each paired device's alias - the name the rest
     /// of the desktop shows for it - and its `Name`. Empty until attachment
-    /// reports them, and it stays empty when BlueZ is unreachable, so
-    /// consumers need a fallback.
+    /// reports them; once reported they stay until it reports again, empty
+    /// when BlueZ cannot be read, so consumers need a fallback.
     pub device_names: HashMap<Address, DeviceNames>,
+    /// Every pair attachment has attached: BlueZ reports it connected to
+    /// this computer and it lists the AirPods service, whether or not it is
+    /// on AAP yet - see `crate::attachment`. Empty while attachment is not
+    /// running.
+    pub attached: HashSet<Address>,
     /// Each pair's firmware version: the last one a link of the pair
     /// reported this run - kept after the link goes, see
     /// [`Inner::firmware_versions`]. A pair with no link this run has none.
@@ -488,6 +493,13 @@ impl Snapshot {
 
     pub fn is_connected(&self, mac: Address) -> bool {
         self.connected_macs.contains(&mac)
+    }
+
+    /// Whether attachment has `mac` attached: connected to this computer,
+    /// as BlueZ reports it, and listing the AirPods service - see
+    /// [`Snapshot::attached`].
+    pub fn is_attached(&self, mac: Address) -> bool {
+        self.attached.contains(&mac)
     }
 
     /// Every device there is to show, sorted by MAC: each one we hold a key for,
@@ -661,6 +673,8 @@ struct Inner {
     /// Each pair's ENC_KEY, and its IRK once one has arrived.
     keys: HashMap<Address, PairKeys>,
     device_names: HashMap<Address, DeviceNames>,
+    /// The pairs attachment has attached - see [`Snapshot::attached`].
+    attached: HashSet<Address>,
     /// Each pair's firmware version, from the device information of its
     /// links. Unlike the rest of AAP, kept after the link goes, for the
     /// app's run: it changes only with an update, which the next link
@@ -812,6 +826,7 @@ impl Inner {
             connected_macs: links.into_iter().map(|(&mac, _)| mac).collect(),
             known_keys,
             device_names: self.device_names.clone(),
+            attached: self.attached.clone(),
             firmware_versions: self.firmware_versions.clone(),
         }
     }
@@ -1145,6 +1160,7 @@ impl Coordinator {
             links: HashMap::new(),
             keys: loaded,
             device_names: HashMap::new(),
+            attached: HashSet::new(),
             firmware_versions: HashMap::new(),
         };
         let (updates, _) = watch::channel(inner.snapshot());
@@ -1260,9 +1276,9 @@ impl Coordinator {
 
     /// Replaces the BlueZ alias map and broadcasts if anything changed.
     ///
-    /// Names are display-only, so a snapshot is only worth sending when they
-    /// actually differ - attachment re-reads them on every connection event
-    /// BlueZ confirms and every adapter change while BlueZ is on the bus, and
+    /// Names are shown, and tell the window which pairs BlueZ has paired; a
+    /// snapshot is sent only when they differ - attachment re-reads them on
+    /// every connection event BlueZ confirms and every adapter change while BlueZ is on the bus, and
     /// rebroadcasting an identical map would wake the UI,
     /// tray, attachment and notifier for nothing.
     pub(crate) async fn set_device_names(&self, names: HashMap<Address, DeviceNames>) {
@@ -1271,6 +1287,18 @@ impl Coordinator {
             return;
         }
         inner.device_names = names;
+        self.broadcast(&inner);
+    }
+
+    /// Replaces the pairs attachment has attached, and broadcasts if they
+    /// changed: attachment tells it after every attach and detach, and an
+    /// empty set when it stops.
+    pub(crate) async fn set_attached(&self, attached: HashSet<Address>) {
+        let mut inner = self.inner.write().await;
+        if inner.attached == attached {
+            return;
+        }
+        inner.attached = attached;
         self.broadcast(&inner);
     }
 
@@ -2351,6 +2379,7 @@ mod tests {
             links: HashMap::new(),
             keys: HashMap::new(),
             device_names: HashMap::new(),
+            attached: HashSet::new(),
             firmware_versions: HashMap::new(),
         }
     }

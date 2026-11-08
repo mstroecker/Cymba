@@ -108,6 +108,7 @@ update, and the row is still to be checked on a pair (#161). See [`docs/app/firm
 | Low battery notifications, at 20% and 5% as UPower's defaults, with a switch in Preferences | ✅ |
 | Preferences kept across restarts, in the XDG config directory | ✅ |
 | Media paused when a pod is taken out, and played again once it is back, with a switch in Preferences | 🚧 |
+| Connecting a known pair from the window, from a banner at its top | 🚧 |
 
 Taking a pod out of an ear pauses every media player that is playing, and putting it
 back plays them again, as on an iPhone - for a pair connected here, while audio plays to
@@ -116,6 +117,13 @@ again once both are back; with one pod worn and the other in the case, taking th
 one out pauses too. A pod put in the case forgets the pause, and a player you played or
 stopped meanwhile is left as you left it. The switch in Preferences is on by default.
 Not yet tried on a pair (#167); see [`docs/app/media-pause.md`](docs/app/media-pause.md).
+
+A pair the app knows that is not connected to this computer - heard in its case, or worn
+while on a phone - shows a banner at the top of the window, "Your AirPods are not
+connected", whose Connect button asks Bluetooth to connect it. Tried on a Pro 3
+(2026-11-08): it takes the AirPods from an iPhone, idle or playing, which gives them up;
+from another phone or computer it is not tried yet (#195); see
+[`docs/app/ui.md`](docs/app/ui.md#the-connect-banner).
 
 ### Unexplored
 

@@ -1,6 +1,6 @@
 //! The Control page: battery display, status text, device switcher, Noise
 //! Control, Features, and Info with the pods' name, model, color and firmware
-//! version.
+//! version; and the connect banner above it, with the header's spinner.
 
 use std::cell::{Cell, RefCell};
 
@@ -81,11 +81,21 @@ pub(super) const BATTERY_IMAGES: [&str; 3] = [
     "airpod_case.png",
 ];
 
-/// Everything on the Control page the update loop needs to touch.
+/// Everything in the window the update loop needs to touch: the Control
+/// page, the switcher and the spinner in the header bar, and the banner under
+/// it.
 pub struct ControlView {
     /// The window's content: the Control page as `device`, or the empty state
     /// as `empty` while `Snapshot::devices` is empty.
     pub content: gtk::Stack,
+    /// Placed under the header bar by `setup_ui`. Its button asks BlueZ to
+    /// connect the pair shown, through `app.connect` - see
+    /// `window::activate`. Revealed only while [`offers_connect`], by
+    /// [`render_device`]; its title and button as [`connect_shown`] has them.
+    pub connect_banner: adw::Banner,
+    /// At the start of the header bar, spinning while a connect to the pair
+    /// shown is under way - see [`connect_shown`]; hidden otherwise.
+    pub connecting_spinner: gtk::Spinner,
     pub battery: BatteryWidgets,
     /// The device switcher, in the header bar in place of the title; hidden
     /// unless `Snapshot::devices` has more than one.
@@ -381,8 +391,24 @@ pub(super) fn create_control_view() -> ControlView {
     content.add_named(&page, Some("device"));
     content.add_named(&create_empty_state(), Some("empty"));
 
+    // Revealed and hidden by the snapshot alone, never by its own press: the
+    // pair connecting is what takes it away.
+    let shown = connect_shown(false, false);
+    let connect_banner = adw::Banner::builder()
+        .name("connect")
+        .title(shown.title)
+        .button_label(shown.button)
+        .build();
+    let connecting_spinner = gtk::Spinner::builder()
+        .name("connecting")
+        .tooltip_text("Connecting")
+        .visible(false)
+        .build();
+
     ControlView {
         content,
+        connect_banner,
+        connecting_spinner,
         battery: widgets,
         device_dropdown,
         device_list,
@@ -499,6 +525,50 @@ fn shown_name(snapshot: &Snapshot, mac: Address) -> Option<String> {
         .or_else(|| snapshot.device_name(mac).map(str::to_string))
 }
 
+/// Whether the window offers to connect `mac`: BlueZ has it paired, and it
+/// is neither attached - see [`Snapshot::attached`] - nor on AAP - see
+/// docs/app/ui.md#the-connect-banner.
+pub(super) fn offers_connect(snapshot: &Snapshot, mac: Address) -> bool {
+    snapshot.device_names.contains_key(&mac)
+        && !snapshot.is_attached(mac)
+        && !snapshot.is_connected(mac)
+}
+
+/// What the connect banner and the header's spinner show for the pair on
+/// show - see docs/app/ui.md#the-connect-banner.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct ConnectShown {
+    /// The banner revealed.
+    pub revealed: bool,
+    pub title: &'static str,
+    /// The button's label; empty hides it.
+    pub button: &'static str,
+    /// The spinner shown and spinning.
+    pub spinning: bool,
+}
+
+/// The connect banner and the spinner, from whether the window offers to
+/// connect the pair shown - [`offers_connect`] - and whether a connect to it
+/// is under way, whatever started it. Revealed from the offer alone; the
+/// title, the button and the spinner from the connect.
+pub(super) fn connect_shown(offers: bool, connecting: bool) -> ConnectShown {
+    if connecting {
+        ConnectShown {
+            revealed: offers,
+            title: "Connecting…",
+            button: "",
+            spinning: true,
+        }
+    } else {
+        ConnectShown {
+            revealed: offers,
+            title: "Your AirPods are not connected",
+            button: "Connect",
+            spinning: false,
+        }
+    }
+}
+
 /// What an Info row shows while its value is not known.
 const UNKNOWN: &str = "Unknown";
 
@@ -532,10 +602,22 @@ fn show_info(row: &adw::ActionRow, label: &gtk::Label, text: &str, known: bool) 
 }
 
 /// Draws one device, and gates noise control, the features and renaming on
-/// how the data arrived.
-pub(super) fn render_device(view: &ControlView, snapshot: &Snapshot, mac: Option<Address>) {
+/// how the data arrived. `connecting` says whether a connect to it is under
+/// way.
+pub(super) fn render_device(
+    view: &ControlView,
+    snapshot: &Snapshot,
+    mac: Option<Address>,
+    connecting: bool,
+) {
     let state = mac.and_then(|m| snapshot.states.get(&m));
     let connected = mac.is_some_and(|m| snapshot.is_connected(m));
+    let shown = connect_shown(mac.is_some_and(|m| offers_connect(snapshot, m)), connecting);
+    view.connect_banner.set_revealed(shown.revealed);
+    view.connect_banner.set_title(shown.title);
+    view.connect_banner.set_button_label(Some(shown.button));
+    view.connecting_spinner.set_spinning(shown.spinning);
+    view.connecting_spinner.set_visible(shown.spinning);
 
     // Kept from the pair's last link, so shown whether a reading is or not.
     let version = mac.and_then(|m| snapshot.firmware_version(m));
@@ -685,6 +767,7 @@ fn status_text(state: &PodState) -> String {
 mod tests {
     use super::*;
     use crate::bluez::DeviceNames;
+    use std::collections::{HashMap, HashSet};
 
     /// A reading identified by `product_id`, in white.
     fn identified(product_id: u16, source: DataSource) -> PodState {
@@ -956,5 +1039,71 @@ mod tests {
         assert_eq!(choose_device(None, &listing(&[], &[C])), Some(C));
         let snap = listing(&[A], &[B, C]);
         assert_eq!(choose_device(Some(C), &snap), Some(C));
+    }
+
+    /// Connect is offered for a pair BlueZ has paired while it is neither
+    /// attached nor on AAP: not for one BlueZ does not have paired, not once
+    /// it is attached, and not while it is on AAP.
+    #[test]
+    fn connect_is_offered_only_while_neither_attached_nor_on_aap() {
+        let names = DeviceNames {
+            alias: "Kitchen".into(),
+            name: None,
+        };
+        let paired = Snapshot {
+            known_keys: vec![MAC_1],
+            device_names: HashMap::from([(MAC_1, names)]),
+            ..Default::default()
+        };
+        assert!(offers_connect(&paired, MAC_1));
+        assert!(!offers_connect(&paired, MAC_2), "not paired in BlueZ");
+
+        let attached = Snapshot {
+            attached: HashSet::from([MAC_1]),
+            ..paired.clone()
+        };
+        assert!(!offers_connect(&attached, MAC_1));
+        let linked = Snapshot {
+            connected_macs: vec![MAC_1],
+            ..paired.clone()
+        };
+        assert!(!offers_connect(&linked, MAC_1), "on AAP, not attached");
+    }
+
+    /// A connect under way changes the title, hides the button and spins
+    /// the spinner, revealed or not; only the offer reveals the banner.
+    #[test]
+    fn a_connect_under_way_shows_in_the_title_button_and_spinner() {
+        let idle = ConnectShown {
+            revealed: true,
+            title: "Your AirPods are not connected",
+            button: "Connect",
+            spinning: false,
+        };
+        assert_eq!(connect_shown(true, false), idle);
+        assert_eq!(
+            connect_shown(false, false),
+            ConnectShown {
+                revealed: false,
+                ..idle
+            }
+        );
+
+        let connecting = ConnectShown {
+            revealed: true,
+            title: "Connecting…",
+            button: "",
+            spinning: true,
+        };
+        assert_eq!(connect_shown(true, true), connecting);
+        // Attached, or on AAP, before BlueZ answers the connect: the
+        // connect goes on behind a banner the snapshot has taken away.
+        assert_eq!(
+            connect_shown(false, true),
+            ConnectShown {
+                revealed: false,
+                ..connecting
+            }
+        );
     }
 }

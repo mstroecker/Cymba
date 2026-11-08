@@ -23,6 +23,7 @@ goes the other way is spawned on the runtime.
 | Low battery notices | `notify::run` | the main context, which sends them: [notifications.md](notifications.md) | `async-channel` |
 | A quit asked for by SIGTERM or SIGINT | `quit_on_signals` | the main context, which quits as the menu does | `async-channel` |
 | Commands to the AirPods | the window, the tray | the pair's link | its queue (`Coordinator::command`), the result back on a `oneshot`: [commands.md](commands.md) |
+| A connect asked for | `app.connect`, on the main context | BlueZ, from a task on the runtime | the result back on a `oneshot`, awaited on the main context: [bluez.md](bluez.md#connecting-a-pair) |
 | The Preferences switch for pausing on the ears | the main context | `media::Media` | `watch`: [media-pause.md](media-pause.md) |
 | Speech levels | the coordinator | `volume::Volume` | events (`Coordinator::speech_events`): [state.md](state.md#events) |
 | Each pod's place | the coordinator | `media::Media` | events (`Coordinator::ear_events`): [state.md](state.md#events) |
@@ -86,7 +87,7 @@ collapse onto one pair: [identification.md](identification.md). How the merge wo
 | Readings across a relaunch | [readings.md](readings.md) |
 | AAP links | [aap-links.md](aap-links.md) |
 | Commands to the AirPods | [commands.md](commands.md) |
-| BlueZ, zbus, adapters, battery providers | [bluez.md](bluez.md) |
+| BlueZ, zbus, adapters, battery providers, connecting a pair | [bluez.md](bluez.md) |
 | Battery levels and GNOME Settings | [battery.md](battery.md) |
 | In-ear | [in-ear.md](in-ear.md) |
 | Noise control | [noise-control.md](noise-control.md) |

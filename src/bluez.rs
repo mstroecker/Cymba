@@ -1,6 +1,7 @@
 //! BlueZ integration: its adapters, read by [`adapters`] and followed by
 //! [`watch_adapters`], its device objects, read and watched by [`Devices`],
-//! and the batteries [`BatteryProvider`] exports to it for GNOME Settings.
+//! the batteries [`BatteryProvider`] exports to it for GNOME Settings, and
+//! a connect to a paired pair ([`connect_device`], [`device_to_connect`]).
 //! All go over a connection they are given - the system bus, or under the
 //! test harness a fake BlueZ on a private one (#72).
 //!
@@ -920,9 +921,9 @@ impl Devices {
         match self.read_device_names().await {
             Ok(names) => names,
             Err(e) => {
-                // Names are cosmetic: without them the switcher falls back to the
-                // pods' own name, then the model or the MAC, so this must never
-                // be fatal.
+                // Never fatal: without names the switcher falls back to the
+                // pods' own name, then the model or the MAC, and the window
+                // offers no Connect until they are read again.
                 tracing::debug!("failed to read device names: {e:#}");
                 HashMap::new()
             }
@@ -1013,9 +1014,10 @@ pub struct DeviceInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionEvent {
     pub device_path: String,
-    /// `None` when the services changed, not the connection: a first pairing
-    /// connects before service discovery fills in the UUID that marks AirPods, so
-    /// the device is not recognizable yet when `Connected` changes.
+    /// `None` when the services changed, not the connection. The app assumes,
+    /// unchecked, that a first pairing connects before service discovery
+    /// fills in the UUID that marks AirPods, so the device is not
+    /// recognizable yet when `Connected` changes.
     pub connected: Option<bool>,
 }
 
@@ -1187,7 +1189,8 @@ pub(crate) fn coalesce<Q: Queue>() -> (Pusher<Q>, impl Stream<Item = Q::Out> + u
 /// A services change carries nothing attachment keeps: it reads `Connected`
 /// and `UUIDs` back from BlueZ. So one pending per device loses nothing.
 /// Dropping changes once there were many instead could drop the one that
-/// attaches a pair after its first pairing.
+/// would attach a pair after its first pairing, if its services come after
+/// `Connected`, as the app assumes - see [`ConnectionEvent::connected`].
 ///
 /// `Connected` changes come out first, then services changes, each in the
 /// order it came. For one device the order makes no difference, as a services
@@ -1319,6 +1322,97 @@ fn device_name_entry(props: &HashMap<String, OwnedValue>) -> Option<(Address, De
             None
         }
     }
+}
+
+/// The longest a connect waits for BlueZ: the bound `ui::connect` puts on
+/// the bus connection and [`connect_device`] together, a guess at a page
+/// timeout, or a page and the profiles BlueZ connects after it
+/// (`docs/app/bluez.md#connecting-a-pair`). Past it the app stops waiting;
+/// what bluetoothd does then: `docs/protocol/linux/bluez.md#device1connect`.
+pub const DEVICE_CONNECT_LIMIT: Duration = Duration::from_secs(30);
+
+/// Asks the bluetoothd on `conn` to connect the paired AirPods at `mac`:
+/// `Device1.Connect`, which pages it
+/// (`docs/protocol/linux/bluez.md#device1connect`). Back once BlueZ has
+/// answered; the caller bounds it, with [`DEVICE_CONNECT_LIMIT`].
+///
+/// A deliberate page, to be called only through `app.connect`, never on
+/// the app's own event. bluetoothd is never started: every call goes, without
+/// auto-start, to the unique name that owns `org.bluez` now, and the
+/// device is found in what that bluetoothd reports, under the adapter it
+/// names for it - see [`device_to_connect`].
+pub async fn connect_device(conn: &Connection, mac: Address) -> Result<()> {
+    let owner = zbus::fdo::DBusProxy::new(conn)
+        .await?
+        .get_name_owner(BLUEZ_SERVICE.try_into()?)
+        .await
+        .context("BlueZ is not on the bus")?;
+    let manager = zbus::fdo::ObjectManagerProxy::builder(conn)
+        .destination(owner.clone())?
+        .path("/")?
+        .cache_properties(proxy::CacheProperties::No)
+        .build()
+        .await?;
+    let objects: Option<ManagedObjects> = manager
+        .inner()
+        .call_with_flags(
+            "GetManagedObjects",
+            proxy::MethodFlags::NoAutoStart.into(),
+            &(),
+        )
+        .await
+        .context("failed to read BlueZ's objects")?;
+    let objects = objects.context("BlueZ sent no reply")?;
+    let path = device_to_connect(&objects, mac)?;
+    let device: zbus::Proxy = proxy::Builder::new(conn)
+        .destination(owner)?
+        .path(path.clone())?
+        .interface("org.bluez.Device1")?
+        .cache_properties(proxy::CacheProperties::No)
+        .build()
+        .await?;
+    let _: Option<()> = device
+        .call_with_flags("Connect", proxy::MethodFlags::NoAutoStart.into(), &())
+        .await
+        .with_context(|| format!("BlueZ did not connect {path}"))?;
+    Ok(())
+}
+
+/// The object to connect `mac` at, among `objects`, BlueZ's: a paired
+/// `Device1` with that `Address` that lists the AirPods service - see
+/// [`is_airpods`] - under an adapter that is there and powered. A pair
+/// paired with several adapters is connected through the first powered one,
+/// by path. Fails when there is none: BlueZ does not have the pair paired,
+/// it is no AirPods, or its adapter is off.
+pub fn device_to_connect(objects: &ManagedObjects, mac: Address) -> Result<OwnedObjectPath> {
+    let paired: Vec<(&OwnedObjectPath, &HashMap<String, OwnedValue>)> = objects
+        .iter()
+        .filter_map(|(path, interfaces)| {
+            let device = interfaces.get("org.bluez.Device1")?;
+            let address: Address = String::try_from(device.get("Address")?.clone())
+                .ok()?
+                .parse()
+                .ok()?;
+            (address == mac && bool_prop(device, "Paired") && is_airpods(device))
+                .then_some((path, device))
+        })
+        .collect();
+    anyhow::ensure!(!paired.is_empty(), "BlueZ has no paired AirPods at {mac}");
+    let powered = |device: &HashMap<String, OwnedValue>| {
+        device
+            .get("Adapter")
+            .and_then(|adapter| OwnedObjectPath::try_from(adapter.clone()).ok())
+            .and_then(|adapter| objects.get(&adapter))
+            .and_then(|interfaces| interfaces.get(ADAPTER_INTERFACE))
+            .is_some_and(|adapter| bool_prop(adapter, "Powered"))
+    };
+    paired
+        .into_iter()
+        .filter(|(_, device)| powered(device))
+        .map(|(path, _)| path)
+        .min_by(|a, b| a.as_str().cmp(b.as_str()))
+        .cloned()
+        .with_context(|| format!("no powered adapter has {mac} paired"))
 }
 
 #[cfg(test)]
@@ -1505,6 +1599,82 @@ mod tests {
             ]
         );
         assert!(adapters_in(ManagedObjects::new()).is_empty());
+    }
+
+    /// The connect goes to the pair's paired device on a powered adapter:
+    /// for a pair paired with two, the one whose adapter is on, the first by
+    /// path when both are; never to a device of the same address that is not
+    /// paired, nor to another pair's. With its adapters off, or no paired
+    /// device, there is nothing to connect, and a paired device that does not
+    /// list the AirPods service - a keyboard - is never connected.
+    #[test]
+    fn a_connect_goes_to_the_paired_device_on_a_powered_adapter() {
+        let pair = "AA:BB:CC:DD:EE:FF";
+        let other = "AA:BB:CC:DD:EE:00";
+        let keyboard = "AA:BB:CC:DD:EE:11";
+        const HID: &str = "00001124-0000-1000-8000-00805f9b34fb";
+        let adapter = |on: bool| vec![(ADAPTER_INTERFACE, device([("Powered", Value::from(on))]))];
+        let paired_on = |address: &str, adapter: &str, paired: bool| {
+            let service = if address == keyboard {
+                HID
+            } else {
+                AIRPODS_UUID
+            };
+            vec![(
+                "org.bluez.Device1",
+                device([
+                    uuids(&[AUDIO_SINK, service]),
+                    ("Address", Value::from(address.to_string())),
+                    (
+                        "Adapter",
+                        Value::from(ObjectPath::try_from(adapter.to_string()).unwrap()),
+                    ),
+                    ("Paired", Value::from(paired)),
+                ]),
+            )]
+        };
+        let world = |hci0_on: bool, hci1_on: bool| {
+            managed([
+                ("/org/bluez/hci0", adapter(hci0_on)),
+                ("/org/bluez/hci1", adapter(hci1_on)),
+                ("/org/bluez/hci2", adapter(true)),
+                (
+                    "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF",
+                    paired_on(pair, "/org/bluez/hci0", true),
+                ),
+                (
+                    "/org/bluez/hci1/dev_AA_BB_CC_DD_EE_FF",
+                    paired_on(pair, "/org/bluez/hci1", true),
+                ),
+                (
+                    "/org/bluez/hci2/dev_AA_BB_CC_DD_EE_FF",
+                    paired_on(pair, "/org/bluez/hci2", false),
+                ),
+                (
+                    "/org/bluez/hci2/dev_AA_BB_CC_DD_EE_00",
+                    paired_on(other, "/org/bluez/hci2", true),
+                ),
+                (
+                    "/org/bluez/hci2/dev_AA_BB_CC_DD_EE_11",
+                    paired_on(keyboard, "/org/bluez/hci2", true),
+                ),
+            ])
+        };
+        let to = |objects: &ManagedObjects| {
+            device_to_connect(objects, pair.parse().unwrap()).map(|path| path.to_string())
+        };
+        let hci0 = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF";
+        let hci1 = "/org/bluez/hci1/dev_AA_BB_CC_DD_EE_FF";
+        assert_eq!(to(&world(true, false)).unwrap(), hci0);
+        assert_eq!(to(&world(false, true)).unwrap(), hci1);
+        assert_eq!(to(&world(true, true)).unwrap(), hci0);
+        assert!(
+            to(&world(false, false)).is_err(),
+            "connected while hci0 and hci1 are off, through hci2, which has it unpaired"
+        );
+        assert!(to(&ManagedObjects::new()).is_err());
+        let objects = world(true, true);
+        assert!(device_to_connect(&objects, keyboard.parse().unwrap()).is_err());
     }
 
     const MAC_A: Address = Address::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);

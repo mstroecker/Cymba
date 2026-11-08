@@ -440,7 +440,7 @@ What Cymba shows of each: [app/identification.md](../../app/identification.md#ba
 | Battery | 1%, live |
 | Update rate | Under 1 s (source not recorded) |
 | Connection required | Yes, L2CAP PSM 4097 |
-| Works with an iPhone connected | No: it disconnects the iPhone (source not recorded) |
+| Works with an iPhone connected | No: connecting the pods here takes them from the iPhone ([linux/bluez.md](../linux/bluez.md#a-pair-another-host-holds)) |
 | Control commands (noise modes, say) | Yes |
 
 **Which to use:**

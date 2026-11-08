@@ -105,6 +105,9 @@ struct Primary {
     /// How the scanner listens, and the pause it takes, for the window's
     /// scanning hint.
     scan_control: ble::scanner::ScanControl,
+    /// The pairs a connect is under way to, for the window's connect banner
+    /// and spinner.
+    connecting: ui::Connecting,
 }
 
 impl Primary {
@@ -145,6 +148,9 @@ impl Primary {
         );
         runtime.spawn(pausing.run());
         ui::add_pause_on_ear(app, settings.clone(), pause_on_ear);
+        // Connects a pair through BlueZ on the system bus, for the window's
+        // connect banner and whatever else offers one.
+        let connecting = ui::add_connect(app, runtime.clone());
         // Worked out on the runtime, beside the tray, and sent from the main
         // context, where the application is.
         let (notices_tx, notices_rx) = async_channel::unbounded();
@@ -165,6 +171,7 @@ impl Primary {
             window: RefCell::default(),
             volume,
             scan_control,
+            connecting,
         }
     }
 
@@ -175,7 +182,12 @@ impl Primary {
             return win.clone();
         }
 
-        let win = ui::activate(app, self.coordinator.clone(), self.scan_control.clone());
+        let win = ui::activate(
+            app,
+            self.coordinator.clone(),
+            self.scan_control.clone(),
+            self.connecting.clone(),
+        );
         *self.window.borrow_mut() = Some(win.clone());
 
         // Tray commands arrive here, on the main context, where touching the
