@@ -182,7 +182,10 @@ and so is never over. The dialog's body changes once an alias is set: `world Set
 fails, and the `toasts` overlay holds `Couldn’t rename the AirPods`.
 
 The connect banner (#195): in `in-range`, `connect`, the banner under the header bar,
-has `revealed` true in the tree; `app Click connect` presses its button, which has the
+has `revealed` true in the tree. The pods start in the open case, charging, so it is
+titled `Your AirPods are in the case` and a click is refused as `Insensitive` (#204);
+`world SetInCase 00:00:5E:00:53:01 left false` takes a pod out, and the title reads
+`Your AirPods are not connected`. Then `app Click connect` presses its button, which has the
 app ask the fake BlueZ to connect the pair (`Device1.Connect`), the app logs `asking
 BlueZ to connect` and `BlueZ connected`, the pair attaches and goes on AAP, and
 `revealed` turns false - a click then is refused as `Hidden`. While the connect is
@@ -196,8 +199,9 @@ org.gtk.Actions.Activate connect "[<'00:00:5E:00:53:01'>]" '{}'`. With both pods
 the closed case (`world SetLid ... false`) the fake refuses the page at once as a page
 timeout, a guess of the fake's - bluetoothd left a `Connect` to pods in the closed case
 unanswered for 30 s, until `bluez::DEVICE_CONNECT_LIMIT` ended the call
-([fake-world.md](../../../docs/development/fake-world.md)): the click leaves
-`Couldn’t connect the AirPods` in `toasts`, the action run from outside only logs
+([fake-world.md](../../../docs/development/fake-world.md)). The pods' last reading
+there has both charging, so the banner's Connect is insensitive: run the action with
+`gdbus` as above. It shows no toast, as only the window's press toasts, and logs
 `failed to connect`.
 
 The nearby notification (#196): in `in-range`, with no readings saved before the run,

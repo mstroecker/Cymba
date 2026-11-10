@@ -500,6 +500,13 @@ notifier:
   next reading after it.
 - A pair idle in range for over an hour - worn, playing from an iPhone - gives no second
   notice: a reading at least every `QUIET`.
+- **Pods resting fully charged in the case for hours:** whether byte 5's two charging
+  bits stay set. In the 2026-11-10 run AAP reported status `05` for both pods while
+  their advertisements still sent `b5`, but only for about 3.5 minutes
+  ([protocol/aap/battery.md](../protocol/aap/battery.md#status-05)). If the bits clear,
+  the pods read as out of the case, and a pull-out after a long rest is no
+  pull-out. Byte 5 of the pods' `BLE parsable raw:` lines, at `RUST_LOG=cymba=trace`,
+  after a few hours in the open case, tells.
 - The charging bits as both pods in the case on the Pro 2 (USB-C): read only on a Pro 3
   ([protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#byte-5-charging-status)).
   With both pods in the open case, then one taken out, byte 5 of each pod's
