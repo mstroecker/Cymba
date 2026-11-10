@@ -76,8 +76,8 @@ same bit means the left pod in one advertisement and the right pod in the next:
 |---|---|---|---|
 | Byte 4, low nibble | Left | Right | Pro 3, 2026-11-07, #184; LibrePods' Linux parser; furiousMAC/continuity |
 | Byte 4, high nibble | Right | Left | As the low nibble |
-| Byte 5, bit 4 (charging) | Left | Right | LibrePods' Linux parser |
-| Byte 5, bit 5 (charging) | Right | Left | LibrePods' Linux parser |
+| Byte 5, bit 4 (charging) | Left | Right | LibrePods' Linux parser; Pro 3, 2026-11-10 |
+| Byte 5, bit 5 (charging) | Right | Left | LibrePods' Linux parser; Pro 3, 2026-11-10 |
 | Status bit 1 (in ear), sender out of the case (bit 6 = 0) | Left | Right | LibrePods' Linux parser |
 | Status bit 3 (in ear), sender out of the case (bit 6 = 0) | Right | Left | LibrePods' Linux parser |
 | Status bit 1 (in ear), sender in the case (bit 6 = 1) | Right | Left | LibrePods' Linux parser |
@@ -136,27 +136,43 @@ which are in the case.
 | 1 | A pod is in an ear; which one: [Which pod sent it](#which-pod-sent-it) | LibrePods' Linux parser |
 | 2 | Both pods are in the case; exception below | LibrePods' Linux parser; Pro 3, 2026-10-25, #71 |
 | 3 | The other pod's in-ear bit; see bit 1 | LibrePods' Linux parser |
-| 4 | One pod is in the case and the other out, set by both pods; exceptions below | LibrePods' Linux parser; Pro 3, 2026-10-25, #71; Pro 3, 2026-11-07, #184 |
+| 4 | A pod is in the open case, set by both pods; exceptions below | Pro 3, 2026-11-10; Pro 3, 2026-10-25, #71; Pro 3, 2026-11-07, #184; LibrePods' Linux parser names the bit |
 | 5 | The sending pod: `1` left, `0` right | LibrePods' Linux parser; Pro 3, #71 and #142 |
 | 6 | The sending pod is in the case | LibrePods' Linux parser; Pro 3, 2026-10-25, #71 |
 | 7 | Unknown | |
 
-What the #71 captures (Pro 3, 2026-10-25) showed of bits 2, 4 and 6:
+What the Pro 3 showed of bits 2, 4 and 6 in the #71 captures (2026-10-25), the #184
+run (2026-11-07) and the 2026-11-10 run ([Runs](#runs)):
 
 - **Bit 2:** with both pods in the case, every advertisement from either pod has it.
-  The left pod's `0x24` set it too, in the case around the lid opening with the right
-  pod worn (Pro 3, 2026-11-07, #184; [Runs](#the-184-run)): what it means there is an
-  [open question](#open-questions).
-- **Bit 6:** with one pod in the case and the other worn, the pod in the case sets it.
-  Not every pod in the case sets it: with both inside, only one pod at a time did.
+  A pod in the case also sets it, with bits 4 and 6 clear, while its partner is out:
+  - in its first advertisements after it goes into the case or after the lid opens on
+    it: `0x24`, `0x04` and `0x0d` (#184; 2026-11-10);
+  - once as its partner was taken out: `0x05`, followed 74 ms later by `0x01`, both
+    pods out (2026-11-10).
+
+  What it means there is an [open question](#open-questions).
+- **Bit 6:** with one pod in the case and the other out, the pod in the case sets it,
+  but for the advertisements under bit 2 above. With both inside, at most one pod at a
+  time set it.
 - **Out of the case or in ears,** neither bit 2 nor bit 6 is set.
-- **Bit 4:** with one pod in the case and the other worn, both set it: `0x13` from the
-  worn pod, `0x73` from the one in the case. It is clear whenever no pod is in the
-  case: `0x0b` both worn, `0x01` both on the desk. It is not set with every pod in the
-  case. Capture 2 of #71 contradicts it ([Runs](#the-71-captures)), and so does the
-  right pod's `0x02`, worn with its partner in the closed case per AAP, bit 4 clear, and
-  the left pod's `0x24`, in the case around the lid opening with the right pod worn
-  (Pro 3, 2026-11-07, #184; [Runs](#the-184-run)).
+- **Bit 4:** both pods set it while a pod is in the open case, whether the other pod is
+  worn, in the hand or in the case too: `0x73` beside `0x13`, `0x51` beside `0x31`,
+  `0x35` beside `0x55` (2026-11-10). It is clear:
+  - with no pod in the case, the case open or closed: `0x0b` both worn, `0x01` both on
+    the desk;
+  - from the worn pod, with its partner in the closed case: `0x02` and `0x22`. The pod
+    in the closed case kept bit 4 in its last advertisements before it fell silent
+    (`0x73` with byte 6 `0x39`);
+  - in the advertisements of a pod in the case under bit 2 above. After the first ones
+    (`0x24`, `0x04`, `0x0d`), AAP's primary pod packet and ear report came 0.1-12 s
+    later ([aap/ear.md](../aap/ear.md)); that pod then sent bits 4 and 6 (`0x73`,
+    `0x53`), and its partner bit 4 (`0x13`, `0x33`).
+
+  Two kinds of advertisement do not fit ([Open questions](#open-questions)): #71's
+  `0x29`, `0x22` and `0x20`, from the left pod in the hand while the right pod sent
+  `0x51` from the open case; and #71's `0x04`, from the right pod after the lid opened
+  on both pods in the case.
 - Bits 2 and 6 together gate the lid: see [Byte 6](#byte-6-lid-state).
 
 #### Ear Detection
@@ -174,6 +190,25 @@ high one ([Which pod sent it](#which-pod-sent-it)); on the Pro 2 (USB-C), an
 [open question](#open-questions). Each nibble is a level in 10% steps,
 rounded down (see [Batteries in the clear and encrypted](#batteries-in-the-clear-and-encrypted)).
 
+#### The other pod's fields
+
+**A pod sends the other pod's level as `f`, unknown, until the two pods have exchanged
+state, and the case's level as `f` while no pod is in the case and at times beside
+one** (Pro 3, 2026-11-10; [Runs](#the-2026-11-10-run)). Its own level is there from its
+first advertisement.
+
+| Field | `f` while | Samples |
+|---|---|---|
+| Byte 4, the other pod's level (high nibble) | The other pod is in the closed case | `02 fa`, `22 fa` |
+| | In a pod's first advertisements after a change | `24 fa`, `04 fa`; the worn right pod's `13 fa`, then `13 aa` 0.3 s later; the worn left pod's `33 fa` |
+| | As the run began, before the AAP link | `00 fa`, `02 fa`, then `03 aa` |
+| Byte 5, the case level (low nibble) | No pod is in the case | `8f` with both pods worn, byte 4 already `aa`, and from the first advertisement after both pods came out |
+| | From the worn pod, the other just put in the open case | The worn right pod's `af`, unchanged until the lid closed 70 s later; the worn left pod sent `a5` at once in the same place |
+| | From the worn pod just after the lid opened on the other | `af`, then `a5` 0.3 s and 0.5 s later |
+
+#184's `24 f5` is the same: the left pod in the case, around the lid opening, sent `f`
+for the right pod worn at 80% ([The #184 run](#the-184-run)).
+
 ### Byte 5: Charging Status
 
 | Bit | Meaning |
@@ -182,10 +217,28 @@ rounded down (see [Batteries in the clear and encrypted](#batteries-in-the-clear
 | 4 | The sending pod is charging |
 | 5 | The other pod is charging |
 | 6 | The case is charging |
-| 7 | Unknown |
+| 7 | Unknown; set in every byte 5 captured here |
 
-The layout is LibrePods' Linux parser's; the #71 captures (Pro 3, 2026-10-25) agree
-with it.
+The layout is LibrePods' Linux parser's; the #71 captures (Pro 3, 2026-10-25) and the
+2026-11-10 run agree with it. When the case level reads `f`:
+[The other pod's fields](#the-other-pods-fields).
+
+**The charging bits follow the pods** (Pro 3, 2026-11-10; [Runs](#the-2026-11-10-run)):
+
+| Where the pods were | Byte 5 |
+|---|---|
+| Both in the case | `b5` from either pod: both charging bits set, the case not charging, the case at 50% |
+| One pod in the case | `95` from it, `a5` or `af` from the other: only the pod in the case charging |
+| Both out of the case | `8f`: neither charging |
+
+One advertisement did not fit: the right pod's `05 9a b5` from the open case, both
+charging bits set, 0.2 s after AAP's ear report put the left pod out
+([aap/ear.md](../aap/ear.md)). Its next advertisement, 74 ms later, was `01` with `8f`.
+
+**Bit 7** was set in every advertisement of the 2026-11-10 run (`8f`, `95`, `a5`,
+`af`, `b5`), in the #184 run's (`8f`, `98`, `a8`), and in the September captures of
+`examples/decrypt_probe.rs`: `f3`, `f5` and `8f` from the Pro 3, `f1` from the Pro 2
+(USB-C).
 
 ### Byte 6: Lid State
 
@@ -554,7 +607,72 @@ advertise, then taken out again.
 | `01 27 20 24 f5 98 58 00 00`, `01 27 20 24 f5 98 51 00 00`, the left pod in the case around the lid opening | Left | `5` | `f`, the right pod worn at 80% |
 
 - Each pod sent its own level in the low nibble, and the other pod's in the high one.
-- The `f` in `24 f5` is unexplained ([Open questions](#open-questions)).
+- The `f` in `24 f5` is the right pod's level, unknown in the left pod's first
+  advertisements around the lid opening, as in the 2026-11-10 run's `24 fa`
+  ([The other pod's fields](#the-other-pods-fields)).
+
+### The 2026-11-10 run
+
+AirPods Pro 3, firmware 9A348, 2026-11-10: a plain build of main (ec2b13f) listening
+through an advertisement monitor (BlueZ 5.87, one Intel USB adapter, `btusb`
+8087:0aaa), at `RUST_LOG=cymba=trace`. The pair was connected over AAP throughout,
+except while both pods were in the closed case. The run went through 15 steps, each
+held 65 s, past the payload changes that follow an event
+([Payload changes](#payload-changes)). Most steps made one change; two made more: one put
+the left pod back in the ear and then the right pod in the open case, another took both
+pods out and then closed the empty case. Where each pod was comes from AAP's ear report
+(`0x06`) and primary pod packet (`0x08`) ([aap/ear.md](../aap/ear.md)).
+
+The status byte in each state, after the pods had settled:
+
+| Where the pods were | Status, by sender | Bit 4 |
+|---|---|---|
+| Both worn, the case closed, then open and empty | Right `0b`, the payload unchanged for 2.5 min, about 70 s of it with the case open | Clear |
+| Both on the desk, the empty case closed, then open | Right `01` | Clear |
+| Right worn, left out of the ear and out of the open, empty case | Right `03` | Clear |
+| Left in the open case, right worn | Left `73`, right `13` | Set |
+| Right in the open case, left worn | Left `33`, right `53` | Set |
+| Right in the open case, left in the hand | Left `31`, right `51` | Set |
+| Both in the open case | Left `35`, right `55` | Set |
+| Both in the case, the lid opened after about 70 s closed, the link down | Left `34`, right `14` | Set |
+| The same, once AAP was back and its ear report put both in the open case | Left `75`, right `15` | Set |
+| Left in the closed case, right worn | Right `02` | Clear |
+| Right in the closed case, left worn | Left `22` | Clear |
+
+A pod in the case whose partner was out sent a few advertisements first that fit none
+of these rows. Bytes 3-8:
+
+| Bytes 3-8 | Sender | Where the pods were | What came next |
+|---|---|---|---|
+| `24 fa 95 11 00 00` | Left | The left pod in the case, the lid just opened; the right pod worn | AAP's `0x08` and `0x06` 12 s later, then left `73`, right `13` |
+| `04 fa 95 11 00 00` | Right | The right pod in the case, the lid just opened; the left pod worn | AAP's `0x08` and `0x06` 10 s later, then left `33`, right `53` |
+| `0d aa 95 31 00 05` | Right | The right pod in the open case for 0.8 s, per AAP's ear report; the left pod worn | AAP's `0x08` and `0x06` 0.1 s later, then right `51`, left `33`, right `53` |
+| `05 9a b5 11 00 05` | Right | The right pod in the open case; the left pod out of it for 0.2 s, per AAP's ear report | AAP's ear report put both out 45 ms later; then right `01` |
+
+- Status `0x24`, byte 8 `00` and the `f` in byte 4's high nibble are as in #184's
+  `24 f5` ([The #184 run](#the-184-run)); byte 6 is `0x11`, where #184 had `0x58` and
+  `0x51`. The right pod's `04 fa` has the `f` too.
+- Closing the lid kept bit 4 in the last advertisements before the pods fell silent:
+  the left pod's `73` with byte 6 `0x39`, alone in the case; with both in the case,
+  `55` and `35` with `0x39` and `0x3a`.
+- With both pods in the case, at most one set bit 6: `55` beside `35`, `75` beside
+  `15`, and neither in `34` and `14`.
+- On its way to the case, with the left pod worn, the right pod was out of the ear for
+  2.4 s, back in it (`0b`), then out again for 0.3 s, and sent `09` each time it was
+  out, bit 4 clear.
+- Just after the lid opened on its partner, byte 4's high nibble and byte 5's low
+  nibble were `f` from the worn pod: the right pod's `13 fa af` at 18:54:00.801, then
+  `13 aa a5` 0.3 s later; the left pod's `33 fa af` at 18:58:54.351, then `33 aa a5`
+  0.5 s later. With the left pod just put in the open case, the worn right pod sent
+  `13 aa af` at 18:51:29, unchanged until the lid closed; with the right pod just put
+  in, the worn left pod sent `33 aa a5` at 18:56:25. The first advertisements of the
+  run, at 18:47:59 before the AAP link, were the right pod's `00 fa` and `02 fa`, then
+  `03 aa`, all with `8f`.
+- Byte 5 was `b5` in every advertisement with both pods in the case, `95` from a pod
+  alone in the case, `a5` or `af` from its partner, and `8f` with both out, but for the
+  right pod's `05 9a b5` ([Byte 5](#byte-5-charging-status)).
+- As the left pod went from the hand back into the case beside the right pod, it sent
+  `33` and `31`, then `35`: bit 4 set throughout.
 
 ### Payload changes
 
@@ -583,7 +701,9 @@ advertise, then taken out again.
 ## Open questions
 
 - Status bits 0 and 7: unknown.
-- Byte 5 bit 7: unknown.
+- Byte 5 bit 7: unknown. It was set in every byte 5 captured here: `8f`, `95`, `98`,
+  `a5`, `a8`, `af`, `b5`, `f3`, `f5` (Pro 3, September, 2026-11-07 and 2026-11-10)
+  and `f1` (Pro 2 (USB-C), September).
 - Byte 6 bits 0-2: what they count; they are not a lid-open counter.
 - Byte 6: why the right pod sent `0x11` from the open case in capture 2 of #71.
 - Byte 8: what `0x08` and `0x0c` mean during connection setup.
@@ -600,19 +720,26 @@ advertise, then taken out again.
 - The payload length: every payload seen is 25 bytes. Whether a payload of another
   length keeps the encrypted bytes at byte 9 or at the end is unknown.
 - Cleartext nibbles `0xB`-`0xE`: never recorded here.
-- Status bit 4: being put back, the left pod sent `0x29`, `0x22` and `0x20` from the
-  hand while the right pod already sent `0x51` from the case (capture 2 of #71), which
-  the rule for bit 4 does not explain; nor does the right pod's `0x02`, worn with its
-  partner in the closed case (Pro 3, 2026-11-07, #184).
+- Status bit 4, two kinds of advertisement that do not fit the rule (Pro 3):
+  - Being put back, the left pod sent `0x29`, `0x22` and `0x20` from the hand, bit 4
+    clear, while the right pod sent `0x51` from the open case (capture 2 of #71).
+    `0x29` also sets bit 3, the right pod's in-ear bit. In the 2026-11-10 run, the left
+    pod in the hand beside the right pod in the open case sent `0x31`, bit 4 set, for
+    over a minute, and `0x33`, `0x31` and `0x35` as it went back into the case
+    ([Runs](#the-2026-11-10-run)).
+  - In the #71 captures, the right pod's first advertisement after the lid opened, with
+    both pods in the case, was `0x04`, bit 4 clear. In the 2026-11-10 run, the first
+    advertisements after the lid opened on both pods in the case were `0x34` and
+    `0x14`, bit 4 set.
 - Byte 4 on the Pro 2 (USB-C): which nibble carries the sender's level. Every sample
   has `0xaa`, which cannot tell the halves apart; the check:
   [app/identification.md](../../app/identification.md#hardware-checks).
-- Byte 4: why the left pod sent `f` for the right pod's level in `24 f5`, around the
-  lid opening, while the right pod was worn at 80% (Pro 3, 2026-11-07, #184). Status
-  `0x24` also sets bit 2 and leaves bit 4 clear.
-- Status bit 2 set with a pod out of the case: the left pod's `0x24`, in the case around
-  the lid opening, with the right pod worn (Pro 3, 2026-11-07, #184). What bit 2 means
-  there is open.
+- Status bit 2 set by a pod in the case while its partner is out, with bits 4 and 6
+  clear: the left pod's `0x24`, in the case around the lid opening, the right pod worn
+  (Pro 3, 2026-11-07, #184); and `0x24`, `0x04`, `0x0d` and `0x05`, each among a pod's first
+  advertisements after it went into the case, after the lid opened on it, or as its
+  partner left the case (Pro 3, 2026-11-10; [Runs](#the-2026-11-10-run)). What bit 2
+  means there is open.
 - Why each pod's payload changed once about 2 s after discovery started (Pro 3,
   2026-11-02, #153). Under an advertisement monitor, with no active scan, the payloads
   changed within 0.5 s of each pod being first heard, one of them twice; under discovery
