@@ -58,10 +58,9 @@ pub struct ProximityData {
     /// (`docs/protocol/ble/proximity-pairing.md#byte-3-status-byte`). Set
     /// with a pod worn in the #184 run, which is open (`docs/protocol/ble/proximity-pairing.md#open-questions`).
     pub both_in_case: bool,
-    /// Status bit 4, "one pod is in the case" in LibrePods' parser: set by both
-    /// pods while one is in the case and one out, with exceptions
-    /// (`docs/protocol/ble/proximity-pairing.md#byte-3-status-byte`).
-    pub one_in_case: bool,
+    /// Status bit 4: a pod is in the open case, set by both pods, with
+    /// exceptions (`docs/protocol/ble/proximity-pairing.md#byte-3-status-byte`).
+    pub pod_in_open_case: bool,
     pub color: u8,
     pub connection_state: u8,
     /// True when the right pod is primary.
@@ -225,7 +224,7 @@ pub fn parse_proximity_data(data: &[u8]) -> Result<ProximityData, ParseError> {
     let in_case = status & 0x44 != 0;
     pd.lid_open = in_case.then(|| payload[6] & 0x08 == 0);
     pd.both_in_case = status & 0x04 != 0;
-    pd.one_in_case = status & 0x10 != 0;
+    pd.pod_in_open_case = status & 0x10 != 0;
     // Byte 8, not 9 - 9 is the first byte of the encrypted portion.
     pd.connection_state = payload[8];
 
@@ -267,8 +266,8 @@ pub struct Cleartext {
     /// Whether both pods are in the case: status bit 2, as
     /// [`ProximityData::both_in_case`] has it.
     pub both_in_case: bool,
-    /// Status bit 4, as [`ProximityData::one_in_case`] has it.
-    pub one_in_case: bool,
+    /// Status bit 4, as [`ProximityData::pod_in_open_case`] has it.
+    pub pod_in_open_case: bool,
     /// Percent, advertised in 10% steps.
     pub left_battery: Option<u8>,
     pub right_battery: Option<u8>,
@@ -307,7 +306,7 @@ impl Cleartext {
         };
         let status = u8::from(self.this_in_case) << 6
             | u8::from(primary_left) << 5
-            | u8::from(self.one_in_case) << 4
+            | u8::from(self.pod_in_open_case) << 4
             | u8::from(bit3_in_ear) << 3
             | u8::from(self.both_in_case) << 2
             | u8::from(bit1_in_ear) << 1;
@@ -472,7 +471,7 @@ mod tests {
             primary: pd.primary_pod(),
             this_in_case: pd.status & 0x40 != 0,
             both_in_case: pd.both_in_case,
-            one_in_case: pd.one_in_case,
+            pod_in_open_case: pd.pod_in_open_case,
             left_battery: pd.left_battery,
             right_battery: pd.right_battery,
             case_battery: pd.case_battery,
@@ -533,7 +532,7 @@ mod tests {
                             primary,
                             this_in_case,
                             both_in_case,
-                            one_in_case: bit(5),
+                            pod_in_open_case: bit(5),
                             left_battery: Some(80),
                             right_battery: Some(30),
                             case_battery: None,
@@ -629,30 +628,33 @@ mod tests {
     fn lid_state_is_unknown_out_of_the_case() {
         let pd = parse_proximity_data(&advert_with_lid(0x0b, 0x76, 0x8f, 0x11)).unwrap();
         assert_eq!(pd.lid_open, None);
-        assert!(!pd.one_in_case);
+        assert!(!pd.pod_in_open_case);
     }
 
     /// From the first #71 capture: with the left pod in the open case and the
     /// right worn, both advertise. The worn pod's `0x13` reads no lid, but its
-    /// status bit 4 says a pod is in the case - the left pod, whose `0x73` reads
-    /// the lid. Bit 4 is clear in `0x0b`, both worn, and `0x01`, both on the
-    /// desk, with no pod in the case; and in `0x29`, from the second #71
-    /// capture, the left pod in hand while the right was already in the case,
-    /// which the rule for bit 4 does not explain
+    /// status bit 4 says a pod is in the open case - the left pod, whose `0x73`
+    /// reads the lid. Bit 4 reads clear in `0x0b`, both worn, and `0x01`, both
+    /// on the desk, with no pod in the case; and in `0x29`, from the second #71
+    /// capture, sent by the left pod in hand as it was put back, the right in
+    /// the open case, which the rule does not explain
     /// (`docs/protocol/ble/proximity-pairing.md#open-questions`).
     #[test]
-    fn a_worn_pod_says_when_its_partner_is_in_the_case() {
+    fn a_worn_pod_says_when_its_partner_is_in_the_open_case() {
         let parse = |cleartext: [u8; 9]| {
             parse_proximity_data(&proximity_message(&cleartext, &[0; ENCRYPTED_LEN])).unwrap()
         };
         let in_case = parse([0x01, 0x27, 0x20, 0x73, 0xaa, 0x94, 0x32, 0x00, 0x04]);
-        assert_eq!((in_case.lid_open, in_case.one_in_case), (Some(true), true));
+        assert_eq!(
+            (in_case.lid_open, in_case.pod_in_open_case),
+            (Some(true), true)
+        );
         let worn = parse([0x01, 0x27, 0x20, 0x13, 0xaa, 0xa4, 0x11, 0x00, 0x04]);
-        assert_eq!((worn.lid_open, worn.one_in_case), (None, true));
+        assert_eq!((worn.lid_open, worn.pod_in_open_case), (None, true));
         for status in [0x0b, 0x01, 0x29] {
             let pd = parse([0x01, 0x27, 0x20, status, 0xaa, 0x8f, 0x11, 0x00, 0x00]);
             assert_eq!(
-                (pd.lid_open, pd.one_in_case),
+                (pd.lid_open, pd.pod_in_open_case),
                 (None, false),
                 "{status:#04x}"
             );

@@ -1130,7 +1130,9 @@ impl Pods {
         let (this, other) = self.pods(side);
         let both_in_case = self.left.in_case && self.right.in_case;
         let this_in_case = this.in_case && (!both_in_case || side == self.primary);
-        let one_in_case = self.left.in_case || self.right.in_case;
+        // Status bit 4 for the closed case too, where the hardware clears it
+        // from the worn pod (`docs/development/fake-world.md`).
+        let pod_in_case = self.left.in_case || self.right.in_case;
         let connection_state = if self.connected {
             CONNECTION_IDLE
         } else {
@@ -1144,7 +1146,7 @@ impl Pods {
             primary: side,
             this_in_case,
             both_in_case,
-            one_in_case,
+            pod_in_open_case: pod_in_case,
             left_battery: self.left.battery,
             right_battery: self.right.battery,
             case_battery,
@@ -1858,7 +1860,7 @@ mod tests {
             assert_eq!((pd.left_battery, pd.right_battery), (Some(80), Some(12)));
             assert!(pd.right_charging && !pd.left_charging);
             assert!(pd.right_in_ear && !pd.left_in_ear);
-            assert!(pd.one_in_case);
+            assert!(pd.pod_in_open_case);
         }
         assert_eq!(left.status & 0x40, 0x40, "the left pod in the case");
         assert_eq!(right.status & 0x40, 0, "the right pod out of it");
@@ -1899,7 +1901,7 @@ mod tests {
                         (left_place.0, right_place.0),
                         "{what}"
                     );
-                    assert_eq!(pd.one_in_case, left_place.1 || right_place.1, "{what}");
+                    assert_eq!(pd.pod_in_open_case, left_place.1 || right_place.1, "{what}");
                 }
             }
         }
@@ -1990,7 +1992,7 @@ mod tests {
         let both = [PodSide::Right, PodSide::Left];
         assert_eq!(advertising(&mut pods, closed), both);
         let worn = read(&pods, PodSide::Left, closed);
-        assert_eq!((worn.lid_open, worn.one_in_case), (None, true));
+        assert_eq!((worn.lid_open, worn.pod_in_open_case), (None, true));
         assert_eq!(worn.case_battery, None, "the case out of reach");
         let in_case = read(&pods, PodSide::Right, closed);
         assert_eq!(in_case.lid_open, Some(false));
