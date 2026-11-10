@@ -326,7 +326,7 @@ Debug logging reports each protocol stage separately
 ```
 BLE parsable: 4B:11:22:33:44:55 model=0x2027 payload=25B
 BLE decryptable: 4B:11:22:33:44:55 -> AA:BB:CC:DD:EE:FF (address resolved)
-BLE 4B:11:22:33:44:55 [decrypted]: left=Some(75) right=Some(73) case=Some(61) lid_open=None one_in_case=false in_ear=true/true
+BLE 4B:11:22:33:44:55 [decrypted]: left=Some(75) right=Some(73) case=Some(61) lid_open=None pod_in_open_case=false in_ear=true/true
 AAP connected to AA:BB:CC:DD:EE:FF (cid 2822) in 412 ms
 ```
 

@@ -159,11 +159,12 @@ worn.
 | Reports none, status bit 4 set | The cached lid is kept |
 | Reports none, status bit 4 clear | No lid |
 
-The parser reports bit 4 as `one_in_case` and stays stateless;
-`Coordinator::handle_advertisement` does the keeping. Which pods set bit 4:
+The parser reports bit 4 as `pod_in_open_case` and stays stateless;
+`Coordinator::handle_advertisement` does the keeping. Which pods set bit 4, and when it
+is clear with a pod in the case:
 [protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#byte-3-status-byte).
-Bit 4 can be clear with a pod in the case (same link), and such an advertisement clears
-a closed lid ([Hardware checks](#hardware-checks)).
+One such case is a worn pod whose partner is in the closed case: its advertisement
+clears a closed lid ([Hardware checks](#hardware-checks)).
 
 A closed lid stays on show while the app runs, until the pods advertise again, for up to
 `BLE_CACHE_TTL`. A relaunch does not keep it: [readings.md](readings.md#what-is-kept).

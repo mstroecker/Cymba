@@ -1548,12 +1548,12 @@ impl Coordinator {
         };
 
         tracing::debug!(
-            "BLE {ble_mac} [decrypted]: left={:?} right={:?} case={:?} lid_open={:?} one_in_case={} in_ear={}/{}",
+            "BLE {ble_mac} [decrypted]: left={:?} right={:?} case={:?} lid_open={:?} pod_in_open_case={} in_ear={}/{}",
             state.left_battery,
             state.right_battery,
             state.case_battery,
             state.lid_open,
-            data.one_in_case,
+            data.pod_in_open_case,
             data.left_in_ear,
             data.right_in_ear
         );
@@ -1565,7 +1565,7 @@ impl Coordinator {
         // device last reported. The worn pod's in the first #71 capture was one,
         // beside its partner's in the case: replaced wholesale, the lid would
         // blink between the partner's reading and none as the two came.
-        if data.lid_open.is_none() && data.one_in_case {
+        if data.lid_open.is_none() && data.pod_in_open_case {
             state.lid_open = inner
                 .ble
                 .get(&real_mac)
@@ -3556,7 +3556,7 @@ mod tests {
             primary: side,
             this_in_case: in_case,
             both_in_case: false,
-            one_in_case: true,
+            pod_in_open_case: true,
             left_battery: left.0,
             right_battery: right.0,
             case_battery: case,
