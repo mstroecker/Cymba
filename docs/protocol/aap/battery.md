@@ -63,9 +63,29 @@ From LibrePods. A pod's code agreed with the primary pod packet in every #142 lo
 | `01` | Charging | A pod in the case. It reported `01` even at 100% (Pro 3, #71 capture 1). |
 | `02` | Discharging | A pod out of the case. |
 | `04` | Disconnected | A part that is not reporting: see [Disconnected is no 0%](#disconnected-is-no-0). |
-| `05` | Not in LibrePods' table | Once, with the pods in the open case, in the Pro 3 traces of PR #109 (#108). Its meaning is not known. |
+| `05` | Not in LibrePods' table | A pod in the open case at 96-100%, again and again (Pro 3, 2026-11-10); once with the pods in the open case in the traces of PR #109 (Pro 3, #108). Its meaning is not known: [Status `05`](#status-05). |
 
 The names of `00`-`04` are LibrePods'.
+
+### Status `05`
+
+In the 2026-11-10 run (Pro 3; [Runs](#the-2026-11-10-run-pro-3)), a pod in the open case
+reported `05`, packet after packet:
+
+- the right pod at 100%, from 18:56:25 on, while the left pod was worn or in the hand;
+- both pods, the left at 99% and the right at 100%, from 19:01:14 on;
+- after the link came back with both pods in the open case, the right pod at 100% from
+  the first packet, and the left pod at 97% and then 96% from 57 ms after its first
+  level.
+
+The same place and level also gave `01`, Charging: the left pod at 100% in the open
+case, with the right pod worn, in each packet at 18:51:29 and 18:54:00. So `05` does
+not come from the level alone. The right pod reported `01` once, 0.9 s before its first
+`05`; after the link came back, the left pod's first level came with `02`, 57 ms before
+its `05`.
+
+While both pods reported `05`, their advertisements set both charging bits (`b5`;
+[ble/proximity-pairing.md](../ble/proximity-pairing.md#byte-5-charging-status)).
 
 ## Level
 
@@ -126,9 +146,33 @@ status `04` and level `00`. #71 capture 4 (2026-11-01, build df29b14,
 `RUST_LOG=linuxpods=trace`): about 4.5 s after the lid closed on one pod, the battery
 reported that pod and the case as Disconnected; with the lid open again, both came back.
 
+### The 2026-11-10 run (Pro 3)
+
+AirPods Pro 3, firmware 9A348: the run of
+[ble/proximity-pairing.md](../ble/proximity-pairing.md#the-2026-11-10-run), at
+`RUST_LOG=cymba=trace`. Its battery packets, with where the pods were per the ear
+report ([ear.md](ear.md#ear-report-0x06)):
+
+```
+18:51:29  04 00 04 00 04 00 03  02 01 64 02 01  04 01 64 01 01  08 01 ff 04 01   left in the open case
+18:54:00  04 00 04 00 04 00 03  02 01 64 02 01  04 01 64 01 01  08 01 3a 02 01   left in the open case
+18:56:24  04 00 04 00 04 00 03  02 01 64 01 01  04 01 64 02 01  08 01 ff 04 01   right just in the open case
+18:56:25  04 00 04 00 04 00 03  04 01 64 02 01  02 01 64 05 01  08 01 3a 02 01   right in the open case, left worn
+19:00:54  04 00 04 00 04 00 03  04 01 63 02 01  02 01 64 05 01  08 01 3a 02 01   right in the open case, left in the hand
+19:01:14  04 00 04 00 04 00 03  04 01 63 05 01  02 01 64 05 01  08 01 3a 02 01   both in the open case
+19:03:37  04 00 04 00 04 00 03  02 01 64 05 01  04 01 00 04 01  08 01 3a 02 01   the link back, the left pod in the closed case per the ear report
+19:03:41  04 00 04 00 04 00 03  02 01 64 05 01  04 01 61 02 01  08 01 3a 02 01   both in the open case
+19:03:41  04 00 04 00 04 00 03  02 01 64 05 01  04 01 61 05 01  08 01 3a 02 01   57 ms later
+19:04:35  04 00 04 00 04 00 03  02 01 64 05 01  04 01 60 05 01  08 01 3a 02 01   both in the open case
+19:04:48  04 00 04 00 04 00 03  02 01 64 02 01  04 01 60 02 01  08 01 00 04 01   both out
+```
+
+The packets at 18:58:54 and 19:00:10 are those of 18:56:25 again.
+
 ## Open questions
 
-- What status `05` means.
+- What status `05` means. A pod in the open case at 96-100% reported it, and in other
+  packets `01` in the same place and at the same level ([Status `05`](#status-05)).
 - What the two `01` bytes of each entry mean.
 - When else a battery packet comes: at every level change, at a change of charging?
 - A level above `64` other than `FF`, or `FF` beside a status other than `04`: never seen.
