@@ -255,6 +255,13 @@ pub struct ConnectionLost {
     pub command: Command,
 }
 
+/// Whether an advertisement says a pod is out of the case: not both pods
+/// charging, as pods in the case are - not status bit 2, which a pod in the
+/// case sets with its partner worn (`docs/app/nearby.md#a-pull-out`).
+pub(crate) fn out_of_case(data: &ProximityData) -> bool {
+    !data.both_pods_charging
+}
+
 /// Which device a reading is from, as its advertisements say. AAP never does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Identity {
@@ -306,8 +313,7 @@ pub struct PodState {
 
     /// Whether a pod is out of the case - worn, in hand or on the table - as
     /// the advertisement behind a BLE reading says: both pods in the case is
-    /// status bit 2 (`docs/protocol/ble/proximity-pairing.md#byte-3-status-byte`),
-    /// set with a pod worn in the #184 run, which is open (`docs/protocol/ble/proximity-pairing.md#open-questions`).
+    /// both charging bits set - see [`out_of_case`].
     /// `None` over AAP and for a restored reading: only a live advertisement
     /// tells it.
     pub out_of_case: Option<bool>,
@@ -383,6 +389,27 @@ pub struct PodState {
 }
 
 impl PodState {
+    /// A live BLE reading of a Pro 3 advertisement with cleartext bytes 3-5 -
+    /// the status, the batteries and the charging byte - and nothing more,
+    /// its charging and [`PodState::out_of_case`] as
+    /// [`Coordinator::handle_advertisement`] takes them, for tests.
+    #[cfg(test)]
+    pub(crate) fn advertised(status: u8, battery: u8, charging: u8) -> Self {
+        use crate::ble::decrypt::ENCRYPTED_LEN;
+        use crate::ble::parser::{parse_proximity_data, proximity_message};
+
+        let cleartext = [
+            0x01, 0x27, 0x20, status, battery, charging, 0x11, 0x00, 0x05,
+        ];
+        let data = parse_proximity_data(&proximity_message(&cleartext, &[0; ENCRYPTED_LEN]))
+            .expect("a proximity pairing advertisement");
+        let mut state = Self::empty(DataSource::Ble);
+        state.left_charging = data.left_charging;
+        state.right_charging = data.right_charging;
+        state.out_of_case = Some(out_of_case(&data));
+        state
+    }
+
     /// A reading from `source` that reports nothing, for tests to fill in.
     #[cfg(test)]
     pub(crate) fn empty(source: DataSource) -> Self {
@@ -1530,7 +1557,7 @@ impl Coordinator {
             left_in_ear: Some(data.left_in_ear),
             right_in_ear: Some(data.right_in_ear),
             lid_open: data.lid_open,
-            out_of_case: Some(!data.both_in_case),
+            out_of_case: Some(out_of_case(&data)),
             last_host: data.last_host,
             connection_state: Some(data.connection_state),
             // BLE carries no noise control mode; `snapshot` attaches the one

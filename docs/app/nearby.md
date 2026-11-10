@@ -164,23 +164,36 @@ offer comes whenever the pods come out, an iPhone nearby or not. A pair whose li
 readings said both pods were in the case, then a pod out, while not connected here, has
 returned. Put back and taken out again is a new return.
 
+- **Both pods in the case is both pods charging:** the live advertisement's two
+  charging bits set
+  ([protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#byte-5-charging-status)),
+  `podstate::out_of_case`. Not status bit 2: a pod in the case sets it with its partner
+  worn, in its first advertisements after the lid opens on it
+  ([protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#byte-3-status-byte)),
+  and with the pair connected over AAP the left pod's `0x24` stood 12.1 s as the pair's
+  last reading, the right pod's `0x04` 9.95 s (Pro 3, 2026-11-10,
+  [protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#the-2026-11-10-run)):
+  longer than `IN_CASE_SETTLE`, so each would make the next reading a pull-out. Those
+  readings set only the sender's charging bit. A case too empty to charge the pods
+  leaves them read as out, and a pull-out from it goes unnoticed: accepted (#204).
 - **Independent of `QUIET` and of resumes.** A pull-out that is also the return after a
   quiet stretch or a resume gives one notice, and uses a pending resume up as any notice
   does.
 - **In the case for `nearby::IN_CASE_SETTLE` first.** The pods must have read as in the
   case from the first live reading that said so, for at least `IN_CASE_SETTLE`, by the
   reading with a pod out. A brief run of readings with both pods in the case between two
-  with a pod out is then no pull-out: the pods have said both are in the case with one
-  worn, which is open
-  ([protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#open-questions)).
+  with a pod out is then no pull-out. The one such reading seen: the right pod's
+  `05 9a b5`, both charging bits set, 0.2 s after the left pod came out of the case,
+  replaced 74 ms later (Pro 3, 2026-11-10,
+  [protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#byte-5-charging-status)).
 - **On the wall clock, not a count of readings.** A reading comes only when a pod's
   payload changes or a new address is heard
   ([protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#update-frequency)),
   so a count says nothing of how long the pods were in the case. A time in the case that
   is after now, the clock set back since, is forgotten, as a time heard is.
-- **`IN_CASE_SETTLE` is a guess:** longer than a stray reading is assumed to stand, and
-  shorter than the pods are assumed to rest in the case between two uses. Neither is
-  measured ([Hardware checks](#hardware-checks)).
+- **`IN_CASE_SETTLE` is a guess** at a time shorter than the pods rest in the case
+  between two uses, which is not measured ([Hardware checks](#hardware-checks)). It
+  outlasts the stale reading above many times over.
 - **Only live readings count.** A restored reading says nothing of the case. At startup,
   a pair whose first live reading has a pod out is the quiet stretch's case, measured
   from the restored reading's time, not a pull-out: a pull-out needs a live reading with
@@ -198,10 +211,10 @@ returned. Put back and taken out again is a new return.
   ([state.md](state.md#snapshots)), so a reading passed over can shorten the stay
   measured, never lengthen it. It can also join two stays into one: a reading with a pod
   out passed over between them leaves one stay, measured from the first.
-- **What `IN_CASE_SETTLE` does not catch:** a stray reading with both pods in the case that
+- **What `IN_CASE_SETTLE` does not catch:** a stray reading of both pods charging that
   stays the last for `IN_CASE_SETTLE` or more, as the pods' payloads do not change,
   makes the next reading with a pod out a pull-out, and a notice follows if the pair is
-  not connected here. In the #184 run the pair was connected here, which ends the stay
+  not connected here. None was seen
   ([Hardware checks](#hardware-checks)).
 
 ## What is notified
@@ -211,9 +224,8 @@ neither [attached](aap-links.md#which-pairs) nor on AAP - and it has been heard 
 `QUIET`; what comes of it: [When a notice shows](#when-a-notice-shows).
 
 - **A pod out of the case** - worn, in hand or on the table - is the last live
-  advertisement's status: not both pods in the case, status bit 2
-  ([protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#byte-3-status-byte));
-  `PodState::out_of_case`.
+  advertisement's charging bits: not both pods charging
+  ([A pull-out](#a-pull-out)); `PodState::out_of_case`.
 - **`SHOW_AFTER` is a wait for a connect of the pods' own.** That pods taken out of the
   case connect here by themselves, so that a notice shown at once would flash and be
   withdrawn, is an assumption, a guess not seen here; so is the value
@@ -421,11 +433,11 @@ notifier:
   says the wait is too short. The same after a resume from sleep with the pods worn: how
   long after the unlock they connect here, if they do, against the resume's notice.
 - One pod worn and the other in the open case, not connected here, with the lid opened
-  and closed: whether a reading with status bit 2 set comes from the pod in the case
-  ([protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#open-questions)),
-  how long it stays the last reading, and whether a pull-out is notified for it. The
-  status byte in the pods' `BLE parsable raw:` lines, at `RUST_LOG=cymba=trace`, beside
-  the `nearby again` line, tells.
+  and closed: that no pull-out is notified, the pod in the case alone charging in its
+  first advertisements as it was with the pair connected over AAP
+  ([protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#the-2026-11-10-run)).
+  The charging byte in the pods' `BLE parsable raw:` lines (byte 5), at
+  `RUST_LOG=cymba=trace`, beside the `nearby again` line, tells.
 - A pod taken out within `nearby::IN_CASE_SETTLE` of the lid opening, the app started
   since the pods were last heard and less than `QUIET` after its saved reading: no
   reading from before has them in the case, so no notice. Whether a user meets that.
@@ -437,11 +449,11 @@ notifier:
   fast, with the pods last heard out of the case, decides whether `IN_CASE_SETTLE` is too
   long. The pods' `BLE parsable raw:` lines from the lid opening to the first with a pod
   out tell.
-- A link dropped while the last cached advertisement has status bit 2 set with a pod
-  worn: the stay starts at the disconnect, so a pod out within `nearby::IN_CASE_SETTLE`
-  of it is no pull-out, and one later is. Whether such a reading is cached at a
-  disconnect: the `BLE parsable raw:` lines before attachment's `AirPods disconnected:`
-  line tell.
+- A link dropped while the last cached advertisement has both pods charging with a pod
+  out of the case: the stay starts at the disconnect, so a pod out within
+  `nearby::IN_CASE_SETTLE` of it is no pull-out, and one later is. Whether such a
+  reading is cached at a disconnect: the `BLE parsable raw:` lines before attachment's
+  `AirPods disconnected:` line tell.
 - A pair connected at login: whether attachment attaches it before the first
   advertisement reaches the notifier, or a notice shows for a moment and is withdrawn.
   On one run attachment attached a connected pair at once
@@ -488,8 +500,7 @@ notifier:
   next reading after it.
 - A pair idle in range for over an hour - worn, playing from an iPhone - gives no second
   notice: a reading at least every `QUIET`.
-- Status bit 2 as a pod out of the case on the Pro 2 (USB-C): read only on a Pro 3. A
-  status that sets bit 2 with a pod worn, which the Pro 3 sent in the #184 run
-  ([protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#open-questions)),
-  delays the notice to the next advertisement, and may start a pull-out
-  ([A pull-out](#a-pull-out)).
+- The charging bits as both pods in the case on the Pro 2 (USB-C): read only on a Pro 3
+  ([protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#byte-5-charging-status)).
+  With both pods in the open case, then one taken out, byte 5 of each pod's
+  `BLE parsable raw:` lines should read both charging bits set, then not.

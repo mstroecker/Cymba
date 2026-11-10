@@ -697,7 +697,8 @@ impl Pods {
     ///
     /// It starts as if just taken out of the box: both pods in the open case,
     /// left at 80%, right at 70% and the case at 50% - different, so a
-    /// left/right mix-up shows - nothing charging, white, left primary, noise
+    /// left/right mix-up shows - the pods charging, as pods in the case do,
+    /// the case not, white, left primary, noise
     /// cancellation, Off not allowed, Conversation Awareness off, as in every
     /// #71 capture, named [`DEFAULT_NAME`], and connected to nothing.
     pub fn new(product_id: u16, mac: Address) -> Self {
@@ -708,7 +709,7 @@ impl Pods {
     pub fn with_keys(product_id: u16, mac: Address, keys: Keys) -> Self {
         let pod = |battery| Pod {
             battery: Some(battery),
-            charging: false,
+            charging: true,
             in_ear: false,
             in_case: true,
             returns: 0,
@@ -835,20 +836,28 @@ impl Pods {
     }
 
     /// Puts a pod in an ear, or takes it out. A pod in an ear is out of the
-    /// case. Over AAP, the next [`Pods::poll`] sends an ear report.
+    /// case, and stops charging if it came from there. Over AAP, the next
+    /// [`Pods::poll`] sends an ear report.
     pub fn set_in_ear(&mut self, side: PodSide, in_ear: bool) {
         let pod = self.pod_mut(side);
         pod.in_ear = in_ear;
-        pod.in_case &= !in_ear;
+        if in_ear && pod.in_case {
+            pod.in_case = false;
+            pod.charging = false;
+        }
     }
 
     /// Puts a pod in the case, or takes it out. A pod in the case is out of
-    /// the ear. Over AAP, the next [`Pods::poll`] sends an ear report; and
-    /// with the lid closed and the other pod in the case too, the pair drops
-    /// its link.
+    /// the ear, and charges, as on a Pro 3
+    /// (`docs/protocol/ble/proximity-pairing.md#byte-5-charging-status`);
+    /// taken out, it stops. [`Pods::set_charging`] changes that after, as for
+    /// a case too empty to charge. Over AAP, the next [`Pods::poll`] sends an
+    /// ear report; and with the lid closed and the other pod in the case too,
+    /// the pair drops its link.
     pub fn set_in_case(&mut self, side: PodSide, in_case: bool) {
         let pod = self.pod_mut(side);
         pod.in_case = in_case;
+        pod.charging = in_case;
         pod.in_ear &= !in_case;
     }
 
@@ -1838,15 +1847,15 @@ mod tests {
     /// Each pod advertises from an address of its own, as itself, calling
     /// itself primary - the right pod's status `0x55` beside the left's `0x35`
     /// in the #71 captures - whichever pod AAP has as primary. Both decode to
-    /// the same left and right. Only the pod in the case reads the lid; the
-    /// worn one says a pod is in the case.
+    /// the same left and right, the left pod charging in the case and the
+    /// right worn. Only the pod in the case reads the lid; the worn one says
+    /// a pod is in the case.
     #[test]
     fn each_pod_advertises_as_itself() {
         let mut pods = Pods::new(PRO_2_USB_C, MAC);
         pods.set_primary(PodSide::Left);
         pods.set_in_ear(PodSide::Right, true);
         pods.set_battery(Part::Right, Some(12));
-        pods.set_charging(Part::Right, true);
 
         assert_eq!(
             advertising(&mut pods, ms(0)),
@@ -1858,7 +1867,7 @@ mod tests {
         assert_eq!(left.primary_pod(), PodSide::Left);
         for pd in [&right, &left] {
             assert_eq!((pd.left_battery, pd.right_battery), (Some(80), Some(12)));
-            assert!(pd.right_charging && !pd.left_charging);
+            assert!(pd.left_charging && !pd.right_charging);
             assert!(pd.right_in_ear && !pd.left_in_ear);
             assert!(pd.pod_in_open_case);
         }
@@ -1880,13 +1889,14 @@ mod tests {
                 let mut pods = Pods::new(PRO_3, MAC);
                 pods.set_battery(Part::Left, Some(83));
                 pods.set_battery(Part::Right, Some(41));
-                pods.set_charging(Part::Left, true);
                 for (side, (in_ear, in_case)) in
                     [(PodSide::Left, left_place), (PodSide::Right, right_place)]
                 {
                     pods.set_in_case(side, in_case);
                     pods.set_in_ear(side, in_ear);
                 }
+                pods.set_charging(Part::Left, true);
+                pods.set_charging(Part::Right, false);
                 for side in [PodSide::Left, PodSide::Right] {
                     let pd = read(&pods, side, ms(0));
                     let what = format!("{side:?}'s, left {left_place:?}, right {right_place:?}");
@@ -2812,27 +2822,40 @@ mod tests {
         );
     }
 
-    /// A pod in or out of an ear or the case, the primary pod's place first.
+    /// A pod in or out of an ear or the case, the primary pod's place first:
+    /// the ear reports sent, beside the battery a pod's charging brings.
     #[test]
     fn reports_where_the_pods_go() {
+        let ear_reports = |actions: &[Action]| -> Vec<Vec<u8>> {
+            sent(actions)
+                .into_iter()
+                .filter(|p| p[OPCODE] == 0x06)
+                .collect()
+        };
         let mut pods = subscribed();
         pods.set_in_ear(PodSide::Left, true);
         pods.set_in_ear(PodSide::Right, true);
         assert_eq!(
-            sent(&pods.poll(ms(10))),
+            ear_reports(&pods.poll(ms(10))),
             [ears(Place::InEar, Place::InEar)],
             "one report for both changes"
         );
         pods.set_in_ear(PodSide::Right, false);
-        assert_eq!(sent(&pods.poll(ms(20))), [ears(Place::InEar, Place::Out)]);
+        assert_eq!(
+            ear_reports(&pods.poll(ms(20))),
+            [ears(Place::InEar, Place::Out)]
+        );
         pods.set_in_case(PodSide::Right, true);
         assert_eq!(
-            sent(&pods.poll(ms(30))),
+            ear_reports(&pods.poll(ms(30))),
             [ears(Place::InEar, Place::InCase)]
         );
         pods.set_in_ear(PodSide::Right, true);
         pods.set_in_ear(PodSide::Right, true);
-        assert_eq!(sent(&pods.poll(ms(40))), [ears(Place::InEar, Place::InEar)]);
+        assert_eq!(
+            ear_reports(&pods.poll(ms(40))),
+            [ears(Place::InEar, Place::InEar)]
+        );
         assert!(pods.poll(ms(50)).is_empty(), "no change, no packet");
     }
 
@@ -2919,7 +2942,7 @@ mod tests {
         pods.set_lid(true);
         let back = [
             battery(Component::Left, Some(80), Status::Discharging),
-            battery(Component::Right, Some(70), Status::Discharging),
+            battery(Component::Right, Some(70), Status::Charging),
             battery(Component::Case, Some(50), Status::Discharging),
         ];
         assert_eq!(

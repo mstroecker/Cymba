@@ -92,7 +92,7 @@ Arguments are `gdbus call` text: strings bare, variants as `'<true>'` or `'<4>'`
 | `Connect(s mac)`, `Disconnect(s mac)` | the Bluetooth link; the app attaches or detaches, and disconnecting closes AAP right after BlueZ's `Connected=false`, as the hardware's AAP dies with the link. BlueZ signals `ServicesResolved=true` 4 s after `Connected=true`, and `false` just before `Connected=false`, as bluetoothd does; nothing in the app waits on it |
 | `SetBattery(s mac, s part, y level)` | `left`, `right` or `case` |
 | `SetInEar(s mac, s pod, b in_ear)` | `left` or `right` into an ear - out of the case - or out of it; over AAP an ear report follows within milliseconds |
-| `SetInCase(s mac, s pod, b in_case)` | `left` or `right` into the case - out of the ear - or out of it, onto the table |
+| `SetInCase(s mac, s pod, b in_case)` | `left` or `right` into the case - out of the ear - or out of it, onto the table; a pod charges while in the case, as on a Pro 3 |
 | `SetLid(s mac, b open)` | the case lid; closed on both pods in the case, the pods drop their link, as real ones do. Over BLE, a pod in the closed case stops advertising 4 s after it closes; opened, the pods come back under new addresses, the right one 1 s later and the left 5.5 s |
 | `Repair(s mac)` | new keys, sent at the next key request; the old IRK stops resolving the pair's addresses, and the old key stops decrypting BLE |
 | `HangUp(s mac)` | closes AAP from the pods' end; the link stays, and the app links the pair again after a second, longer after repeated hang-ups (#49) |
@@ -297,7 +297,8 @@ click `scan-guide`: it hands the guide's URL to GTK to open, which may reach a b
 on the user's desktop.
 
 Low battery notifications: `SetBattery` a part to 20 or below (5 or below is critical),
-then `app Notifications` lists the notification sent, by ID `low-battery-<MAC>`. Above 25
+a pod out of the case - the pods start in it, charging - then `app Notifications` lists
+the notification sent, by ID `low-battery-<MAC>`. Above 25
 again, clear of the low threshold, or charging, it lists the withdrawal - or, while another
 part is still low, a send naming only the parts that are. The private session bus has no
 notification server, so nothing is shown and GLib warns once; the list records what the app
