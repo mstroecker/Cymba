@@ -25,9 +25,9 @@ use crate::presence::{Presence, Resumes};
 pub const QUIET: Duration = Duration::from_secs(30 * 60);
 
 /// How long both pods must have read as in the case, from the first live
-/// reading that said so, before a pod out of the case is a pull-out. A guess:
-/// longer than the readings that set status bit 2 with a pod worn stand,
-/// which is open (`docs/app/nearby.md#a-pull-out`).
+/// reading that said so, before a pod out of the case is a pull-out: longer
+/// than a stale reading of both pods charging stood, and a guess at a time
+/// shorter than the pods rest in the case (`docs/app/nearby.md#a-pull-out`).
 pub const IN_CASE_SETTLE: Duration = Duration::from_secs(10);
 
 /// How long a return must have qualified before it is shown, so that a pair
@@ -603,6 +603,15 @@ mod tests {
         state
     }
 
+    /// A live advertisement heard at `seen`, with cleartext bytes 3-5 - the
+    /// status, the batteries and the charging byte - as the Pro 3 sent them
+    /// on 2026-11-10 (`docs/protocol/ble/proximity-pairing.md#the-2026-11-10-run`).
+    fn advertised(seen: SystemTime, status: u8, battery: u8, charging: u8) -> PodState {
+        let mut state = PodState::advertised(status, battery, charging);
+        state.last_seen = Some(seen);
+        state
+    }
+
     /// The reading an earlier run saved, heard at `seen`.
     fn restored(seen: SystemTime) -> PodState {
         let mut state = PodState::empty(DataSource::Ble);
@@ -989,6 +998,45 @@ mod tests {
                 true,
                 AWAKE
             )),
+            [NEARBY]
+        );
+    }
+
+    /// A pod in the case setting status bit 2 with its partner worn, as the
+    /// left pod's `24 fa 95` did for 12.1 s in the 2026-11-10 run, is no stay
+    /// in the case: only that pod charges. Known, both worn at `t0()`, that
+    /// reading for 12 s from minute 1, then the worn right pod's `13 aa a5`:
+    /// nothing is shown.
+    #[test]
+    fn a_pod_alone_in_the_case_with_bit_2_is_no_pull_out() {
+        let mut returns = known();
+        let at = |seconds: u64| t0() + Duration::from_secs(seconds);
+        for (seconds, status, battery, charging) in [
+            (0, 0x0b, 0xaa, 0x8f),
+            (60, 0x24, 0xfa, 0x95),
+            (72, 0x13, 0xaa, 0xa5),
+        ] {
+            let snap = of(advertised(at(seconds), status, battery, charging));
+            let actions = settled(&mut returns, &snap, at(seconds), true, AWAKE);
+            assert!(shown(&actions).is_empty(), "{seconds} s: {actions:?}");
+        }
+    }
+
+    /// Both pods charging in the case for 12 s, as the 2026-11-10 run's `35`
+    /// and `55` with `b5`, then the right pod out with `01 9a 8f`, is a
+    /// pull-out: shown `SHOW_AFTER` later.
+    #[test]
+    fn both_pods_charging_in_the_case_then_one_out_is_a_pull_out() {
+        let mut returns = known();
+        let at = |seconds: u64| t0() + Duration::from_secs(seconds);
+        for (seconds, status, battery) in [(60, 0x35, 0xa9), (66, 0x55, 0x9a)] {
+            let snap = of(advertised(at(seconds), status, battery, 0xb5));
+            let actions = settled(&mut returns, &snap, at(seconds), true, AWAKE);
+            assert!(actions.is_empty(), "{seconds} s: {actions:?}");
+        }
+        let out = of(advertised(at(72), 0x01, 0x9a, 0x8f));
+        assert_eq!(
+            shown(&settled(&mut returns, &out, at(72), true, AWAKE)),
             [NEARBY]
         );
     }

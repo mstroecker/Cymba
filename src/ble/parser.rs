@@ -61,6 +61,12 @@ pub struct ProximityData {
     /// Status bit 4: a pod is in the open case, set by both pods, with
     /// exceptions (`docs/protocol/ble/proximity-pairing.md#byte-3-status-byte`).
     pub pod_in_open_case: bool,
+    /// Byte 5's charging bits 4 and 5 both set: both pods charging, as the
+    /// pods in the case are
+    /// (`docs/protocol/ble/proximity-pairing.md#byte-5-charging-status`).
+    /// From the cleartext alone: [`ProximityData::add_decrypted_data`]
+    /// leaves it, where it replaces each pod's charging flag.
+    pub both_pods_charging: bool,
     pub color: u8,
     pub connection_state: u8,
     /// True when the right pod is primary.
@@ -204,6 +210,7 @@ pub fn parse_proximity_data(data: &[u8]) -> Result<ProximityData, ParseError> {
     pd.case_charging = ((charging_byte >> 6) & 0x01) != 0;
     pd.right_charging = ((charging_byte >> 5) & 0x01) != 0;
     pd.left_charging = ((charging_byte >> 4) & 0x01) != 0;
+    pd.both_pods_charging = pd.left_charging && pd.right_charging;
     if is_flipped {
         std::mem::swap(&mut pd.left_charging, &mut pd.right_charging);
     }
@@ -600,6 +607,41 @@ mod tests {
                     "byte {i} of {captured:02x?}"
                 );
             }
+        }
+    }
+
+    /// Status, battery and charging bytes from the Pro 3 run of 2026-11-10
+    /// (`docs/protocol/ble/proximity-pairing.md#byte-5-charging-status`):
+    /// `b5` from either pod with both in the case reads both charging; `95`
+    /// from a pod alone in the case, its own bit only; `a5` and `af` from its
+    /// worn partner, the other pod's bit only; `8f` with both out, neither.
+    /// The left pod's `24`, bit 2 set from the case with the right pod worn,
+    /// reads as its byte 5 says.
+    #[test]
+    fn reads_both_pods_charging_from_byte_5() {
+        let parse = |status: u8, battery: u8, charging: u8| {
+            let cleartext = [
+                0x01, 0x27, 0x20, status, battery, charging, 0x11, 0x00, 0x05,
+            ];
+            parse_proximity_data(&proximity_message(&cleartext, &[0; ENCRYPTED_LEN])).unwrap()
+        };
+        for (status, battery, charging, left, right) in [
+            (0x35, 0xa9, 0xb5, true, true),
+            (0x55, 0x9a, 0xb5, true, true),
+            (0x73, 0xaa, 0x95, true, false),
+            (0x53, 0xaa, 0x95, false, true),
+            (0x24, 0xfa, 0x95, true, false),
+            (0x13, 0xaa, 0xa5, true, false),
+            (0x13, 0xfa, 0xaf, true, false),
+            (0x33, 0xaa, 0xa5, false, true),
+            (0x0b, 0xaa, 0x8f, false, false),
+        ] {
+            let pd = parse(status, battery, charging);
+            assert_eq!(
+                (pd.left_charging, pd.right_charging, pd.both_pods_charging),
+                (left, right, left && right),
+                "{status:02x} {charging:02x}"
+            );
         }
     }
 

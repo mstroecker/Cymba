@@ -705,8 +705,12 @@ mod tests {
             .expect("timed out waiting for the AAP reading")
             .unwrap();
 
+            // Out of the case, where the fake's pods charge.
             world
-                .with_pods(PAIR, |pods| pods.set_battery(PodPart::Left, Some(15)))
+                .with_pods(PAIR, |pods| {
+                    pods.set_in_case(crate::ble::parser::PodSide::Left, false);
+                    pods.set_battery(PodPart::Left, Some(15));
+                })
                 .await
                 .unwrap();
             let Action::Show(notice) = next(&notices).await else {
