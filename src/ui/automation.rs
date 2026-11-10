@@ -69,7 +69,7 @@
 //! | `battery-<column>-charging`, `battery-<column>-in-ear` | its icons, visible while they apply |
 //! | `status` | the status text under the battery display: the lid, what the pods are doing, the source |
 //! | `last-seen` | how old a BLE reading is; hidden for AAP |
-//! | `connect` | the banner under the header bar, titled `Your AirPods are not connected`, its button `Connect`: revealed while BlueZ has the pair paired and it is neither attached nor on AAP - see docs/app/ui.md#the-connect-banner; clicked, its button runs `app.connect` for the pair, and a failure's toast is in `toasts`. While a connect to the pair is under way it is titled `Connecting…` with its button hidden, so a click is refused as `Hidden` |
+//! | `connect` | the banner under the header bar, titled `Your AirPods are not connected`, its button `Connect`: revealed while BlueZ has the pair paired and it is neither attached nor on AAP - see docs/app/ui.md#the-connect-banner; clicked, its button runs `app.connect` for the pair, and a failure's toast is in `toasts`. While a connect to the pair is under way it is titled `Connecting…` with its button hidden, so a click is refused as `Hidden`. While the pair's last live advertisement has both pods in the case it is titled `Your AirPods are in the case` with its button insensitive, so a click is refused as `Insensitive` |
 //! | `noise-control` | the Noise Control group, insensitive unless the device is on AAP |
 //! | `noise-off`, `noise-noise-cancellation`, `noise-transparency`, `noise-adaptive` | its radios |
 //! | `conversation-awareness` | the Features switch for Conversation Awareness: on as the snapshot has it, insensitive unless the device is on AAP and has reported it; turning it sends the command |
@@ -773,6 +773,7 @@ fn click(target: &str) -> Result<(), Error> {
         match press(widget) {
             Pressed::Done => Ok(()),
             Pressed::Hidden => Err(Error::Hidden(target.to_string())),
+            Pressed::Insensitive => Err(Error::Insensitive(target.to_string())),
             Pressed::Unsupported => Err(unsupported(node, target, "be clicked")),
         }
     })
@@ -783,6 +784,8 @@ enum Pressed {
     Done,
     /// What the click would land on inside the widget is not on screen.
     Hidden,
+    /// What the click would land on inside the widget takes no input.
+    Insensitive,
     /// The widget takes no click.
     Unsupported,
 }
@@ -814,6 +817,9 @@ fn press(widget: &gtk::Widget) -> Pressed {
         };
         if !button.is_mapped() {
             return Pressed::Hidden;
+        }
+        if !button.is_sensitive() {
+            return Pressed::Insensitive;
         }
         button.emit_clicked();
     } else if let Some(switch) = widget.downcast_ref::<gtk::Switch>() {

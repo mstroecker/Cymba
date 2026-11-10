@@ -391,8 +391,9 @@ pub struct PodState {
 impl PodState {
     /// A live BLE reading of a Pro 3 advertisement with cleartext bytes 3-5 -
     /// the status, the batteries and the charging byte - and nothing more,
-    /// its charging and [`PodState::out_of_case`] as
-    /// [`Coordinator::handle_advertisement`] takes them, for tests.
+    /// for tests: each pod's charging from the cleartext, where
+    /// [`Coordinator::handle_advertisement`] takes it from the decrypted bytes,
+    /// and [`PodState::out_of_case`] as [`out_of_case`] gives it.
     #[cfg(test)]
     pub(crate) fn advertised(status: u8, battery: u8, charging: u8) -> Self {
         use crate::ble::decrypt::ENCRYPTED_LEN;

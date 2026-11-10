@@ -383,7 +383,10 @@ A connect from the window's connect banner has run on a pair with both pods in t
 connected to nothing, held by an idle iPhone, and by one playing to them - and with both
 in the closed case, where it failed at `bluez::DEVICE_CONNECT_LIMIT` with the toast
 ([protocol/linux/bluez.md](../protocol/linux/bluez.md#runs)). The cases below are still
-to try, with `RUST_LOG=cymba=info`, on a pair that is paired and not connected here:
+to try, with `RUST_LOG=cymba=info`, on a pair that is paired and not connected here. The
+banner's Connect is insensitive while both pods charge in the case
+([ui.md](ui.md#the-connect-banner)), so the cases in the case start the connect from
+outside, with `gdbus` and `org.gtk.Actions.Activate connect`:
 
 - In the open case, idle, connected to nothing: `asking BlueZ to connect`, then `BlueZ
   connected` and `AirPods connected`, in either order, and the banner gone. How long
@@ -391,7 +394,7 @@ to try, with `RUST_LOG=cymba=info`, on a pair that is paired and not connected h
   `bluez::DEVICE_CONNECT_LIMIT`.
 - Out of range: whether it fails - `failed to connect`, the error, and a toast - and
   after how long.
-- In the closed case: a second press after the first gave up, which fails at once with
+- In the closed case: a second connect after the first gave up, which fails at once with
   `InProgress` if bluetoothd still pages; and the lid opened while a connect waits,
   which may let it succeed
   ([protocol/linux/bluez.md](../protocol/linux/bluez.md#open-questions)).
@@ -413,9 +416,9 @@ pair:
 - A connect that succeeds: "Connecting…" with no button and the spinner from the press
   to `BlueZ connected`, with the spinner alone, the banner gone, for the second or so
   between the pair attached and BlueZ's answer.
-- In the closed case: "Connecting…" and the spinner for the whole
-  `bluez::DEVICE_CONNECT_LIMIT`, then the toast, the title and the Connect button back
-  together.
+- In the closed case, started with `gdbus`: "Connecting…" and the spinner for the whole
+  `bluez::DEVICE_CONNECT_LIMIT`, then the title and the Connect button back together,
+  the button insensitive, and no toast: only the window's press toasts.
 - A connect started from outside - `gdbus` with `org.gtk.Actions.Activate connect`: the
   same.
 - With two pairs, switching between them while one connects: each shows its own state.

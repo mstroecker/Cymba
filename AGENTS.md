@@ -321,7 +321,8 @@ notification was Conversation Awareness's speech level `09` (#150).
   up only when notified, or when a connection here begins after the resume; a pair still shown
   connected after the resume uses nothing up. [Why](docs/app/nearby.md#a-return)
 - A pod out of the case is a return, each time, when the live readings before it had both pods
-  in the case for at least `nearby::IN_CASE_SETTLE` (a guess) on the wall clock, from the first
+  in the case (both charging, `podstate::out_of_case`, never status bit 2) for at least
+  `nearby::IN_CASE_SETTLE` (a guess) on the wall clock, from the first
   that said so; never a count of readings, never a restored reading, not while connected here
   (a snapshot connected here ends the stay, and one begun after it starts no earlier than the
   first snapshot without the connection), and not from before a sleep while a resume's
@@ -466,6 +467,9 @@ notification was Conversation Awareness's speech level `09` (#150).
 - The banner's title and button, and the header's spinner, show a connect to the pair shown under
   way from `connect::Connecting`, whatever started it (`control::connect_shown`); never from the
   press itself. [Why](docs/app/ui.md#the-connect-banner)
+- The banner's Connect is insensitive while the pair's last live advertisement has both pods
+  charging (`control::in_the_case`), from the snapshot alone, never at the press (#204).
+  [Why](docs/app/ui.md#the-connect-banner)
 - The banner's Connect runs `app.connect`, the MAC its string target. [Why](docs/app/ui.md#the-connect-banner)
 - Only the window's press (`connect::press`) toasts a failed connect; any other is logged.
   [Why](docs/app/ui.md#the-connect-banner)
