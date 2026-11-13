@@ -1159,25 +1159,9 @@ mod tests {
         );
     }
 
-    /// With both pods in the case and no connect under way, the banner says
-    /// so and its Connect takes no press (#204).
-    #[test]
-    fn connect_takes_no_press_with_both_pods_in_the_case() {
-        assert_eq!(
-            connect_shown(true, false, true),
-            ConnectShown {
-                revealed: true,
-                title: "Your AirPods are in the case",
-                button: "Connect",
-                pressable: false,
-                spinning: false,
-            }
-        );
-    }
-
     /// The banner of a paired pair with no connect under way, from the state
     /// the snapshot reports, whatever the reading came from: in the case,
-    /// Connect taking no press, with both pods charging - a reading restored
+    /// Connect taking no press (#204), with both pods charging - a reading restored
     /// at startup with the lid closed, or a live one as the Pro 3's
     /// `35 a9 b5` of 2026-11-10 - and not connected, Connect pressable, with
     /// one pod charging alone - a restored reading, the left pod's

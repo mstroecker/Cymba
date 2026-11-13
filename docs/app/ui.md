@@ -96,8 +96,8 @@ another host holds: [bluez.md](bluez.md#connecting-a-pair).
     `bluez::DEVICE_CONNECT_LIMIT`.
   - **Pods taken out while the app was not running** read as in the case until they are
     heard: accepted. Pods out of the case advertise, so this lasts until their first
-    advertisement; pods not heard at all are likely out of range, and a connect to them
-    would fail too.
+    advertisement. Pods not heard at all may be out of range; whether a connect to them
+    fails is a [hardware check](bluez.md#hardware-checks).
   - **A pull-out is not read this way:** the nearby notification counts a stay in the
     case from live readings alone ([nearby.md](nearby.md#a-pull-out)). Over AAP the
     pair is connected, and there is no banner.
