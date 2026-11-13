@@ -65,7 +65,8 @@ pub struct ProximityData {
     /// pods in the case are
     /// (`docs/protocol/ble/proximity-pairing.md#byte-5-charging-status`).
     /// From the cleartext alone: [`ProximityData::add_decrypted_data`]
-    /// leaves it, where it replaces each pod's charging flag.
+    /// leaves it, where it replaces the charging flag of each pod whose level
+    /// it reads.
     pub both_pods_charging: bool,
     pub color: u8,
     pub connection_state: u8,
@@ -97,7 +98,10 @@ impl ProximityData {
     /// would read them (#131).
     ///
     /// Decrypted layout: byte 1 = first pod, byte 2 = second pod, byte 3 = case;
-    /// in each, bit 7 is charging and bits 0-6 are the level.
+    /// in each, bit 7 is charging and bits 0-6 are the level. A part whose
+    /// level is unknown keeps the cleartext's charging flag: an unknown part
+    /// reads `ff`, its charging bit set with it
+    /// (`docs/protocol/ble/proximity-pairing.md#the-other-pods-fields`).
     pub fn add_decrypted_data(&mut self, decrypted: &[u8]) -> Result<(), ParseError> {
         if decrypted.len() != ENCRYPTED_LEN {
             return Err(ParseError::BadDecryptedLen(decrypted.len()));
@@ -119,16 +123,18 @@ impl ProximityData {
         let (bat2, chg2) = split(decrypted[2]);
         let (case_bat, case_chg) = split(decrypted[3]);
 
-        if self.is_flipped {
-            self.left_battery = bat2;
-            self.right_battery = bat1;
-            self.left_charging = chg2;
-            self.right_charging = chg1;
+        let (left, right) = if self.is_flipped {
+            ((bat2, chg2), (bat1, chg1))
         } else {
-            self.left_battery = bat1;
-            self.right_battery = bat2;
-            self.left_charging = chg1;
-            self.right_charging = chg2;
+            ((bat1, chg1), (bat2, chg2))
+        };
+        self.left_battery = left.0;
+        if left.0.is_some() {
+            self.left_charging = left.1;
+        }
+        self.right_battery = right.0;
+        if right.0.is_some() {
+            self.right_charging = right.1;
         }
 
         // Case is independent of flip.
@@ -1019,6 +1025,40 @@ mod tests {
         pd.add_decrypted_data(&decrypted((127, false), (0, false), (0, false)))
             .unwrap();
         assert_eq!(pd.left_battery, None);
+    }
+
+    /// A pod whose decrypted byte reads `ff`, level unknown and bit 7 set,
+    /// keeps the cleartext's charging flag, as in the Pro 3's `24 fa 95` and
+    /// `04 fa 95` of 2026-11-10: the sender in the case at 100% charging
+    /// (`e4`), its worn partner `ff`, the case at 58% (`3a`). Byte 5's `95`
+    /// sets the sender's charging bit alone, so only the sender charges, on
+    /// either side of the flip, and the partner's level is unknown.
+    #[test]
+    fn an_unknown_pods_charging_comes_from_the_cleartext() {
+        let decrypted = [
+            0x00, 0xe4, 0xff, 0x3a, 0xa1, 0xa2, 0xa3, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        let mut left_sends = parse_proximity_data(&advert(0x24, 0xfa, 0x95)).unwrap();
+        left_sends.add_decrypted_data(&decrypted).unwrap();
+        assert_eq!(
+            (left_sends.left_battery, left_sends.left_charging),
+            (Some(100), true)
+        );
+        assert_eq!(
+            (left_sends.right_battery, left_sends.right_charging),
+            (None, false)
+        );
+
+        let mut right_sends = parse_proximity_data(&advert(0x04, 0xfa, 0x95)).unwrap();
+        right_sends.add_decrypted_data(&decrypted).unwrap();
+        assert_eq!(
+            (right_sends.right_battery, right_sends.right_charging),
+            (Some(100), true)
+        );
+        assert_eq!(
+            (right_sends.left_battery, right_sends.left_charging),
+            (None, false)
+        );
     }
 
     /// Decrypted bytes 4-6 are read as `last_host`: a payload encrypted with

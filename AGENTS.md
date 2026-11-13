@@ -406,7 +406,8 @@ notification was Conversation Awareness's speech level `09` (#150).
 - `Option<u8>` for unknown battery, never a sentinel. Levels above 100 mean unavailable,
   and so does an AAP part with status Disconnected (`0x04`), whatever its level byte: it
   comes as `0x00` as well as `0xFF`, and the `0x00` read as a real 0% put the case at 0%
-  (#108).
+  (#108). A part whose decrypted level is unknown keeps the cleartext's charging flag: its
+  `ff` sets bit 7 too (#206). [Why](docs/app/identification.md#batteries-in-the-clear-and-encrypted)
 - Log stages separately: `BLE parsable:` covers every advertisement that parses, including
   ones the coordinator later drops; `BLE decryptable:` reports identification. Noisy
   non-proximity Apple data goes to `trace`.

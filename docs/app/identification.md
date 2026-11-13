@@ -102,6 +102,14 @@ today: what the keys give is not precision but identification. The cleartext is 
 decoded, as it is all an unidentified pair advertises: offering such a pair for pairing
 would read it (#131).
 
+**A part whose decrypted level is unknown keeps the cleartext's charging flag.** An
+unknown part decrypts as `ff`, its charging bit set with the level's
+([protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#the-other-pods-fields)),
+where byte 5 can say it is not charging. Taken from the decrypted byte, a pod alone in
+the case with its partner worn would read both pods charging, which the connect banner
+reads as both in the case ([ui.md](ui.md#the-connect-banner), #206). The case's flag is
+kept the same way.
+
 ## Keyed by the real MAC
 
 How a pair's addresses map to it, step by step:
