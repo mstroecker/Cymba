@@ -469,8 +469,8 @@ tries: [app/identification.md](../../app/identification.md#what-counts).
 |---|---|---|
 | 0 | Connection state, as cleartext byte 8; high bits unexplained | Pro 3, 2026-10-25, #71; both models, 2026-10-28 to 2026-11-10 |
 | 1 | Sending pod: bit 7 charging, bits 0-6 the level | Levels: both models, 2026-09-09/10; which pod: Pro 3, 2026-10-25, #71 |
-| 2 | Other pod: bit 7 charging, bits 0-6 the level | Levels: both models, 2026-09-09/10; which pod: Pro 3, 2026-10-25, #71 |
-| 3 | Case: bit 7 charging, bits 0-6 the level | Both models, 2026-09-09/10 |
+| 2 | Other pod: bit 7 charging, bits 0-6 the level; `ff` unknown ([The other pod's fields](#the-other-pods-fields)) | Levels: both models, 2026-09-09/10; which pod: Pro 3, 2026-10-25, #71 |
+| 3 | Case: bit 7 charging, bits 0-6 the level; `ff` unknown ([The other pod's fields](#the-other-pods-fields)) | Both models, 2026-09-09/10 |
 | 4-6 | The last three bytes of a host's address, in the order `bluetoothctl` prints it: the host connected, kept after it disconnected until another host connected, but for one change after a disconnect, below | Pro 3, 2026-10-25, #71; both models, 2026-10-28 to 2026-11-10 |
 | 7-9 | The last three bytes of the pair's real MAC, or `00 00 00` unless both pods are in the case | Both models, 2026-09-09/10; Pro 3, #71 |
 | 10 | Unknown; the values below | Both models, 2026-09-09/10 and 2026-10-28 to 2026-11-10 |
@@ -588,7 +588,7 @@ Cymba: [app/identification.md](../../app/identification.md#the-suffix).
 | | Cleartext (bytes 4-5) | Encrypted (bytes 9-24) |
 |---|---|---|
 | Steps | 10%, rounded down (0%, 10%, ..., 100%) | 1% (0-100%), the levels AAP reports (source not recorded) |
-| Encoding | A nibble: `0x0`-`0x9` = 0-90%, `0xA`-`0xE` = 100%, `0xF` = unknown | Bit 7 charging, bits 0-6 the level |
+| Encoding | A nibble: `0x0`-`0x9` = 0-90%, `0xA`-`0xE` = 100%, `0xF` = unknown | Bit 7 charging, bits 0-6 the level; an unknown part reads `ff`, bit 7 set whatever it does ([The other pod's fields](#the-other-pods-fields)) |
 | Key needed | None | The ENC_KEY, from AAP ([aap/keys.md](../aap/keys.md)) |
 | Says which pair sent it | No | Yes |
 
