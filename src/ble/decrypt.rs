@@ -128,8 +128,10 @@ pub struct Plaintext {
     /// (`docs/protocol/ble/proximity-pairing.md#decrypted-format`).
     pub header: u8,
     /// Byte 1, the primary pod: the left one unless the advertisement says the
-    /// right is primary. Each battery byte holds the level in bits 0-6 - `None`
-    /// goes out as 127, which reads as unknown - and charging in bit 7.
+    /// right is primary. Each battery byte holds the level in bits 0-6 and
+    /// charging in bit 7; `None` goes out as `ff`, whatever the charging flag,
+    /// as the pods send an unknown part
+    /// (`docs/protocol/ble/proximity-pairing.md#the-other-pods-fields`).
     pub primary_battery: Option<u8>,
     pub primary_charging: bool,
     /// Byte 2, the other pod.
@@ -153,8 +155,9 @@ impl Plaintext {
     /// The 16 bytes to encrypt. Bytes 10-11 get zeros: written so the
     /// plaintext is laid out like a captured one, and checked by nothing.
     pub fn to_bytes(&self) -> [u8; ENCRYPTED_LEN] {
-        let battery = |level: Option<u8>, charging: bool| {
-            level.unwrap_or(0x7F) & 0x7F | if charging { 0x80 } else { 0x00 }
+        let battery = |level: Option<u8>, charging: bool| match level {
+            Some(level) => level & 0x7F | if charging { 0x80 } else { 0x00 },
+            None => 0xFF,
         };
         let mut plain = [0u8; ENCRYPTED_LEN];
         plain[0] = self.header;
@@ -258,21 +261,18 @@ mod tests {
         );
     }
 
-    /// An unknown level goes out as 127, which no reader takes for a level, with
-    /// charging still in bit 7 beside it.
+    /// An unknown level goes out as `ff`, charging or not, as the Pro 3 sent
+    /// its unknown parts on 2026-11-10.
     #[test]
-    fn writes_an_unknown_level_above_100() {
-        let plain = Plaintext {
-            case_battery: None,
-            case_charging: true,
-            ..pro3_plaintext(ZEROED_SUFFIX)
-        };
-        assert_eq!(plain.to_bytes()[3], 0xFF);
-        let plain = Plaintext {
-            case_charging: false,
-            ..plain
-        };
-        assert_eq!(plain.to_bytes()[3], 0x7F);
+    fn writes_an_unknown_level_as_ff() {
+        for charging in [true, false] {
+            let plain = Plaintext {
+                case_battery: None,
+                case_charging: charging,
+                ..pro3_plaintext(ZEROED_SUFFIX)
+            };
+            assert_eq!(plain.to_bytes()[3], 0xFF, "charging {charging}");
+        }
     }
 
     #[test]

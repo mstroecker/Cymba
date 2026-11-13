@@ -13,7 +13,7 @@ temporary file and renamed over the old one, as the keystore is
 
 | Kept | Not kept |
 |---|---|
-| The levels, the charging flags, the model and color, and when the advertisement was heard | In-ear, the lid, whether a pod is out of the case, the connection state: stale by the time anything loads them. Nor the advertisement itself. |
+| The levels, the charging flags, the model and color, and when the advertisement was heard | In-ear, the lid, whether a pod is out of the case (`PodState::out_of_case`, which a pull-out reads), the connection state: stale by the time anything loads them. Nor the advertisement itself. The connect banner reads the charging flags all the same ([below](#loading)). |
 
 So a closed lid stays on show while the app runs ([state.md](state.md#the-lid)), and not
 across a relaunch, as the lid may have been opened meanwhile.
@@ -39,6 +39,11 @@ run. It is shown, with its age, but left out of GNOME Settings by
 `attachment::exported_levels`: `Battery1` would show yesterday's level as now. It is left
 out by that flag, never by a freshness window there, which would withdraw the battery and
 export it again (#62): [battery.md](battery.md#gnome-settings).
+
+Its charging flags count for the window's connect banner as any reading's do: both pods
+charging reads as both in the case, the pods in the closed case advertising nothing
+(#206, [ui.md](ui.md#the-connect-banner)). A pull-out never comes from it
+([nearby.md](nearby.md#a-pull-out)).
 
 Checked on a Pro 3, 2026-11-05, at `da79836`: relaunched with the pair in its closed
 case, the window showed its last levels with their age, and GNOME Settings showed no

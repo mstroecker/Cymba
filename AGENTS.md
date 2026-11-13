@@ -406,7 +406,8 @@ notification was Conversation Awareness's speech level `09` (#150).
 - `Option<u8>` for unknown battery, never a sentinel. Levels above 100 mean unavailable,
   and so does an AAP part with status Disconnected (`0x04`), whatever its level byte: it
   comes as `0x00` as well as `0xFF`, and the `0x00` read as a real 0% put the case at 0%
-  (#108).
+  (#108). A part whose decrypted level is unknown keeps the cleartext's charging flag: its
+  `ff` sets bit 7 too (#206). [Why](docs/app/identification.md#batteries-in-the-clear-and-encrypted)
 - Log stages separately: `BLE parsable:` covers every advertisement that parses, including
   ones the coordinator later drops; `BLE decryptable:` reports identification. Noisy
   non-proximity Apple data goes to `trace`.
@@ -467,9 +468,9 @@ notification was Conversation Awareness's speech level `09` (#150).
 - The banner's title and button, and the header's spinner, show a connect to the pair shown under
   way from `connect::Connecting`, whatever started it (`control::connect_shown`); never from the
   press itself. [Why](docs/app/ui.md#the-connect-banner)
-- The banner's Connect is insensitive while the pair's last live advertisement has both pods
-  charging (`control::in_the_case`), from the snapshot alone, never at the press (#204).
-  [Why](docs/app/ui.md#the-connect-banner)
+- The banner's Connect is insensitive while the state the snapshot reports for the pair has both
+  pods charging (`control::in_the_case`), whatever the reading came from - a restored one too - and
+  never at the press (#204, #206). [Why](docs/app/ui.md#the-connect-banner)
 - The banner's Connect runs `app.connect`, the MAC its string target. [Why](docs/app/ui.md#the-connect-banner)
 - Only the window's press (`connect::press`) toasts a failed connect; any other is logged.
   [Why](docs/app/ui.md#the-connect-banner)

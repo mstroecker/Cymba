@@ -194,7 +194,8 @@ returned. Put back and taken out again is a new return.
 - **`IN_CASE_SETTLE` is a guess** at a time shorter than the pods rest in the case
   between two uses, which is not measured ([Hardware checks](#hardware-checks)). It
   outlasts the stale reading above many times over.
-- **Only live readings count.** A restored reading says nothing of the case. At startup,
+- **Only live readings count.** A restored reading starts no stay in the case, though
+  the connect banner reads its charging flags ([ui.md](ui.md#the-connect-banner)). At startup,
   a pair whose first live reading has a pod out is the quiet stretch's case, measured
   from the restored reading's time, not a pull-out: a pull-out needs a live reading with
   both pods in the case first.
@@ -248,8 +249,8 @@ neither [attached](aap-links.md#which-pairs) nor on AAP - and it has been heard 
   user is away: the user's return wakes it.
 
 - **The lid opened alone notifies nothing;** a pod taken out later in the same return
-  does. Only a live advertisement says where the pods are: a restored reading, and a
-  reading over AAP, have no `out_of_case`.
+  does. For a notice, only a live advertisement says where the pods are: a restored
+  reading, and a reading over AAP, have no `out_of_case`.
 - **Once per return, never per advertisement.** After the notice, nothing more until the
   next return: the pair unheard for `QUIET` again, a resume from sleep, or a pull-out.
 - **Connected here, the return ends:** a pair that connects and disconnects again is not
