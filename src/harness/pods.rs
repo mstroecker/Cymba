@@ -1114,7 +1114,7 @@ impl Pods {
     /// under the pair's ENC_KEY, gives them exact, with the real address's
     /// last three bytes in bytes 7-9 - zeroed unless both pods are in the
     /// case, status bit 2, connected or not (#71) - and a tail, bytes 12-15,
-    /// that follows from the rest of the payload, as a MIC would. Its byte 0
+    /// that follows from the rest of the payload. Its byte 0
     /// is cleartext byte 8, the connection state, as in all 111 payloads of
     /// the second capture.
     ///
@@ -1125,9 +1125,8 @@ impl Pods {
     /// #71 captures and the hardware checks since, with the pods worn and
     /// connected to this host or to nothing, it changed again about 5 s, 30 s
     /// and 60 s after such a change with nothing else changing, and then
-    /// stayed - 163 s in the longest stretch. The gaps of 25 and 30 s may be
-    /// a periodic refresh, a guess (`docs/protocol/ble/proximity-pairing.md`,
-    /// Update Frequency). On 2026-11-02 a pair idle in the open case,
+    /// stayed - 163 s in the longest stretch
+    /// (`docs/protocol/ble/proximity-pairing.md`, Update Frequency). On 2026-11-02 a pair idle in the open case,
     /// connected to a phone, sent the same payload for minutes (#153). The
     /// fake leaves out the three changes after an event, which carry nothing
     /// new to read: the app reads the state, and the state is the same.
@@ -1200,10 +1199,11 @@ impl Pods {
     }
 
     /// Bytes 12-15 of the plaintext the pod on `side` sends with `cleartext`,
-    /// `head` the plaintext without them. On the hardware they change
-    /// whenever the payload does, and may be a MIC (#71); here they follow
-    /// from the rest of the payload, as a MIC would, so they change with it
-    /// and only with it.
+    /// `head` the plaintext without them. On the hardware they differ between
+    /// every two distinct payloads
+    /// (`docs/protocol/ble/proximity-pairing.md#decrypted-format`); here they
+    /// follow from the rest of the payload, so they change with it and only
+    /// with it.
     fn tail(&self, side: PodSide, cleartext: &[u8], head: &[u8; 16]) -> [u8; 4] {
         let mut block = encrypt(head, &self.keys.irk);
         for (byte, clear) in block.iter_mut().zip(cleartext) {

@@ -59,7 +59,7 @@ From LibrePods. A pod's code agreed with the primary pod packet in every #142 lo
 
 | Byte | Status | Seen here |
 |---|---|---|
-| `00` | Unknown (LibrePods) | Never. |
+| `00` | Unknown (LibrePods) | Twice, for the right pod at 100%, taken out of the case just opened (Pro 3, 2026-11-01, #71 capture 4, 19:42:44); `02` in the next packet. |
 | `01` | Charging | A pod in the case. It reported `01` even at 100% (Pro 3, #71 capture 1). |
 | `02` | Discharging | A pod out of the case. |
 | `04` | Disconnected | A part that is not reporting: see [Disconnected is no 0%](#disconnected-is-no-0). |
@@ -86,6 +86,14 @@ its `05`.
 
 While both pods reported `05`, their advertisements set both charging bits (`b5`;
 [ble/proximity-pairing.md](../ble/proximity-pairing.md#byte-5-charging-status)).
+
+The left pod's level fell while it reported `05`, in the case throughout: 99% at
+19:01:14, 97% at 19:03:41, after the lid had been closed for 70 s, and 96% at 19:04:35.
+Its advertisements' decrypted level kept its charging bit set all the while (`e3`, `e1`,
+`e0`).
+
+#71 capture 4 (Pro 3, 2026-11-01) had no `05` in its 37 battery packets: pods in the
+open case at 100% reported `01`.
 
 ## Level
 

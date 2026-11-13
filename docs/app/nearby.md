@@ -270,7 +270,7 @@ Either reading is enough:
 
 | Reading | Says | Where it comes from |
 |---|---|---|
-| The host named is another | Decrypted bytes 4-6, the last three bytes of a host's address, end none of this computer's adapters' addresses | Seen on one Pro 3 (#71), unconfirmed: [protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#decrypted-format); their byte order, and whether they name the host last used or the host connected, are [open](../protocol/ble/proximity-pairing.md#open-questions); `PodState::last_host` |
+| The host named is another | Decrypted bytes 4-6, the last three bytes of a host's address, end none of this computer's adapters' addresses | The host connected, kept after it disconnected until another host connected, in the order `bluetoothctl` prints an address (Pro 3 and Pro 2 (USB-C), 2026-10-28 to 2026-11-10), but for one change after a disconnect: [protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#decrypted-format); that pods naming another host will not come here is unconfirmed, and whether anything but a connection changes the bytes is [open](../protocol/ble/proximity-pairing.md#open-questions); `PodState::last_host` |
 | In use elsewhere | Cleartext byte 8 is `0x05` Music, `0x06` Call or `0x07` Ringing, in a reading heard since the pair was last connected here | LibrePods' names, unconfirmed here: [protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#byte-8-connection-state); `PodState::connection_state` |
 
 - **Both readings are unconfirmed** ([Hardware checks](#hardware-checks), #194). Wrong,
@@ -288,11 +288,9 @@ Either reading is enough:
   - and every other value; for a reading that names no host; and while this computer's
   adapters are not known, or there are none: every host would read as another, while an
   adapter may be away only for a moment, as when it is replugged.
-- **Only the last three bytes are compared,** as only those are advertised. In the order
-  the address is written, as bytes 7-9 carry the pair's own MAC
-  ([protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#decryption-validation)):
-  for bytes 4-6, a guess, which is
-  [open](../protocol/ble/proximity-pairing.md#open-questions).
+- **Only the last three bytes are compared,** as only those are advertised, in the
+  order the address is written, the order bytes 4-6 carry it in
+  ([protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#decrypted-format)).
 - **This computer's adapters' addresses** are each adapter's `Address`, powered or not,
   read with the adapters from BlueZ's `GetManagedObjects` and `InterfacesAdded` - no
   call of their own ([bluez.md](bluez.md#adapters)). Attachment tells the coordinator
@@ -396,21 +394,15 @@ notifier:
 
 ## Hardware checks
 
-- Decrypted bytes 4-6 and byte 8 on a pull-out, the pods last used with an iPhone nearby,
-  once with it playing and once idle, and once with this computer last used: whether
-  bytes 4-6 end the iPhone's address and then this computer's adapter's, in the order the
-  address is written, and whether byte 8 reads `0x05` while the iPhone plays. Both
-  decide whether the notice skips `nearby::SHOW_AFTER`; the log's `nearby again` line
+- A pull-out, the pods last used with an iPhone nearby, once with it playing and once
+  idle, and once with this computer last used: whether byte 8 reads `0x05` while the
+  iPhone plays, and whether the notice skips `nearby::SHOW_AFTER` for the iPhone and
+  waits for this computer; the log's `nearby again` line
   says whether it did, and `examples/decrypt_probe.rs` shows the plaintext of a captured
   payload ([development/probes.md](../development/probes.md#decrypt_probe)). #194 asks
   for the same runs.
 - Pods last used with this computer, taken out of the case: whether they connect here
   before `SHOW_AFTER`, so that no notice shows.
-- Decrypted bytes 4-6 after a disconnect from this computer, the pods out of the case
-  and not connected elsewhere: whether they still end this computer's adapter's address
-  ([protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#open-questions)).
-  If they name another host by then, the notice skips `nearby::SHOW_AFTER` for pods last
-  used here; the log's `nearby again` line says it did.
 
 - A suspend and resume with the pods worn, not connected here: a notice after unlocking.
 - A suspend with the pair connected here, and a resume with the pods on another host and

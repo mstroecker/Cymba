@@ -132,17 +132,30 @@ which are in the case.
 
 | Bit | Meaning | Source |
 |---|---|---|
-| 0 | Unknown | |
+| 0 | Unknown; with an AAP link up, it matched `0x08`'s `SS`: below | Pro 3, 2026-11-10; Pro 3, 2026-11-01, #71 capture 4 and #142 session 2 |
 | 1 | A pod is in an ear; which one: [Which pod sent it](#which-pod-sent-it) | LibrePods' Linux parser |
 | 2 | Both pods are in the case; exception below | LibrePods' Linux parser; Pro 3, 2026-10-25, #71 |
 | 3 | The other pod's in-ear bit; see bit 1 | LibrePods' Linux parser |
 | 4 | A pod is in the open case, set by both pods; exceptions below | Pro 3, 2026-11-10; Pro 3, 2026-10-25, #71; Pro 3, 2026-11-07, #184; LibrePods' Linux parser names the bit |
 | 5 | The sending pod: `1` left, `0` right | LibrePods' Linux parser; Pro 3, #71 and #142 |
 | 6 | The sending pod is in the case | LibrePods' Linux parser; Pro 3, 2026-10-25, #71 |
-| 7 | Unknown | |
+| 7 | Unknown; clear in every advertisement here | Pro 3 and Pro 2 (USB-C), 2026-10-28 to 2026-11-10 |
+
+- **Bit 0:** with an AAP link up, it matched the `SS` byte of the last primary pod
+  packet (`0x08`, [aap/ear.md](../aap/ear.md#primary-pod-0x08)) in every advertisement
+  from either pod but two: clear while `SS` was `00`, set while it was `01` (Pro 3,
+  2026-11-10, #71 capture 4 and #142 session 2). The two came in #142 session 2, set
+  0.22 s before an `SS` of `01` arrived (17:23:17.45). The Pro 2 (USB-C) role switch run
+  (2026-11-02) had `SS` `01` and bit 0 set throughout. Across every log here, bit 0 was
+  clear only in `0x00`, `0x02`, `0x04`, `0x08`, `0x14`, `0x20`, `0x22`, `0x24` and
+  `0x34` from the Pro 3, and in `0x00`, `0x04`, `0x14` and `0x24` from the Pro 2 (USB-C).
+- **Bit 7** was clear in every advertisement of the app logs from 2026-10-28 to
+  2026-11-10: 771 distinct ones from the Pro 3 and 100 from the Pro 2 (USB-C)
+  ([Runs](#runs)).
 
 What the Pro 3 showed of bits 2, 4 and 6 in the #71 captures (2026-10-25), the #184
-run (2026-11-07) and the 2026-11-10 run ([Runs](#runs)):
+run (2026-11-07) and the 2026-11-10 run, and of bit 6 in the other app logs
+([Runs](#runs)):
 
 - **Bit 2:** with both pods in the case, every advertisement from either pod has it.
   A pod in the case also sets it, with bits 4 and 6 clear, while its partner is out:
@@ -154,8 +167,14 @@ run (2026-11-07) and the 2026-11-10 run ([Runs](#runs)):
   What it means there is an [open question](#open-questions).
 - **Bit 6:** with one pod in the case and the other out, the pod in the case sets it,
   but for the advertisements under bit 2 above. With both inside, at most one pod at a
-  time set it.
-- **Out of the case or in ears,** neither bit 2 nor bit 6 is set.
+  time set it. With both inside and an AAP link up, the pod that set it was the one the
+  link's `0x08` named secondary: each time on the Pro 3 (the PR #137 check at 23:47:55
+  and 23:59:53, #71 capture 4 at 19:40:19 and 19:43:19, 2026-11-10 at 19:01:14 and
+  19:03:41) and once on the Pro 2 (USB-C) (#62 first pairing, 17:38:39). Once a pod
+  out of the case set it: the left pod's `0x69`, out of the ear, 2 ms before AAP's
+  `0x08` named the right pod primary (#71 capture 4, 19:39:57.685).
+- **Out of the case or in ears,** neither bit 2 nor bit 6 is set, but for the one `0x69`
+  under bit 6.
 - **Bit 4:** both pods set it while a pod is in the open case, whether the other pod is
   worn, in the hand or in the case too: `0x73` beside `0x13`, `0x51` beside `0x31`,
   `0x35` beside `0x55` (2026-11-10). It is clear:
@@ -236,9 +255,11 @@ charging bits set, 0.2 s after AAP's ear report put the left pod out
 ([aap/ear.md](../aap/ear.md)). Its next advertisement, 74 ms later, was `01` with `8f`.
 
 **Bit 7** was set in every advertisement of the 2026-11-10 run (`8f`, `95`, `a5`,
-`af`, `b5`), in the #184 run's (`8f`, `98`, `a8`), and in the September captures of
-`examples/decrypt_probe.rs`: `f3`, `f5` and `8f` from the Pro 3, `f1` from the Pro 2
-(USB-C).
+`af`, `b5`), in the #184 run's (`8f`, `98`, `a8`), in every one of the app logs of
+2026-10-28 to 2026-11-10 on both models (`96`, `b6`, `d5`, `e5`, `f5` among them from the
+Pro 3, `90` and `b0` from the Pro 2 (USB-C); [Runs](#runs)), and in the September
+captures of `examples/decrypt_probe.rs`: `f3`, `f5` and `8f` from the Pro 3, `f1` from
+the Pro 2 (USB-C).
 
 ### Byte 6: Lid State
 
@@ -246,7 +267,7 @@ charging bits set, 0.2 s after AAP's ear report put the left pod out
 |---|---|---|
 | 0-2 | Unknown; not a lid-open counter | Pro 3, 2026-10-25, #71 |
 | 3 | Lid: `0` open, `1` closed, while a pod is in the case | LibrePods' Linux parser; Pro 3, 2026-10-25, #71 |
-| 4-7 | Follow the pod and the case's charging; values below | Pro 3, 2026-11-01, #71 |
+| 4-7 | Follow the pod and the case's charging; values and exceptions below | Pro 3, 2026-11-01, #71 |
 
 **Bit 3 is the lid only while a pod is in the case,** that is while status bit 6 or bit
 2 is set. With the pods out, bit 3 reads 0 whatever the lid is doing. Read that way,
@@ -260,7 +281,8 @@ reads the lid (`0x73`), the worn one does not (`0x13`).
 The pods then stop advertising ([Update Frequency](#update-frequency)), so a closed
 lid is seen only in the last advertisements before they go silent.
 
-**The high nibble** follows the pod and the case's charging (Pro 3, 2026-11-01, #71):
+**The high nibble** follows the pod and the case's charging, but for the exceptions
+below (Pro 3, 2026-11-01, #71):
 
 | High nibble | Sender |
 |---|---|
@@ -268,9 +290,55 @@ lid is seen only in the last advertisements before they go silent.
 | `0x3` | In a case that is not charging |
 | `0x5` | In a charging case |
 
-The low bits are not a lid-open counter, which LibrePods calls them: they stayed `1`
-across two lid opens and went to `2` when the pods went back in (Pro 3, 2026-10-25,
-#71). The captures behind these rules: [Runs](#the-71-captures).
+Bit 4 was set in every byte 6 captured here, on both models.
+
+**`0x1` from a pod in the open case,** not the `0x3` of the table (Pro 3):
+
+- **After the lid opened** on it, a pod in the case sent `0x1` in every advertisement:
+  - 2026-11-10: the left pod 18:53:48-18:54:00, its last advertisements heard before
+    it was taken out; the right pod 18:58:44-19:01:12, then `0x3` from 19:01:14, once
+    the left pod was in beside it; both pods 19:03:34-19:04:48, 74 s, until they were
+    taken out.
+  - #71 capture 4: the left pod after the lid opened at 19:41:44, until 19:41:46.2,
+    then `0x3` 0.5 s after the right pod's first advertisement from out of the case;
+    the left pod again from 19:43:15, then `0x3` 0.4 s after AAP's ear report put the
+    right pod in the case beside it (19:43:19.9).
+  - The PR #137 check: the right pod at 23:48:13, until it came out 1.9 s later.
+
+  Other pods sent `0x3` from their first advertisement after the lid opened: the right
+  pod at 19:43:32 in #71 capture 4, the left pod at 23:48:14 in the PR #137 check.
+- **Going into an open case,** a pod sent `0x1` for 0.1-0.3 s first, then `0x3`:
+  2026-11-10 at 18:51:29 and 19:01:14; #71 capture 4 at 19:40:17, 19:40:19, 19:42:50,
+  19:43:19, 19:46:02 and 19:46:04; the PR #137 check at 23:47:53, 23:47:55, 23:59:48
+  and 23:59:51. Others sent `0x3` from the first: the right pod at 18:56:24 on 2026-11-10
+  and at 19:42:25 in #71 capture 4, both pods in the #62 rename check (16:45:45-46).
+
+**`0x5` with byte 5's case-charging bit clear:** in #142 session 2 (Pro 3, 2026-11-01,
+17:22-17:24), every advertisement from a pod in the case had `0x5` but the left pod's
+first, `0x34`, 0.4 s before its `0x54`. Byte 5 was `96` or `b6`, and the decrypted case
+level 67-68% without its charging bit. The Pro 2 (USB-C), both pods in the case just
+opened, the case at 1% and not charging (byte 5 `b0`), sent `0x11`, then `0x71` from
+0.7 s after its first advertisement, and `0x51` in the next one heard, 13 s later, once
+the AAP link was up (#62 first pairing, 2026-11-01).
+
+**The low bits are not a lid-open counter,** which LibrePods calls them: they stayed
+`1` across two lid opens and went to `2` when the pods went back in (Pro 3, 2026-10-25,
+#71). The captures behind these rules: [Runs](#the-71-captures). In the app logs of
+2026-10-28 to 2026-11-10 ([Runs](#the-app-logs-of-2026-10-28-to-2026-11-02)):
+
+- **Each pod has its own:** with both in the case, `0x32` beside `0x31` and `0x3a`
+  beside `0x39`.
+- **Values `0` to `4`** came from the Pro 3, and only `0` and `1` from the Pro 2 (USB-C).
+- **Going into the case,** a pod's value went up by one, `0` to `1`, `1` to `2`, `2`
+  to `3` or `3` to `4`, within 0.2 s of its first advertisement from the case: 18 of
+  the 19 dockings whose value before was heard, 0.1-61 s before. In the 19th it went
+  from `0` to `2`, the pod unheard for the 40 s before (#62 rename check, 16:45:45).
+- **After the lid had been closed for 12-71 s,** every pod heard after it opened sent
+  `1`, whatever its value before (11 openings, 17 pods). Twice a pod sent `0` first,
+  for 0.45 s (#71 capture 4, 19:47:03) and 1.1 s (#142 session 2, 17:23:16).
+- **After the lid had been closed for 5 s,** each pod's value had gone up by one:
+  `0x39` to `0x32` and `0x3a` to `0x33` (#62 rename check, 16:45:47-16:45:52).
+- They changed at no other time.
 
 How Cymba reads and keeps the lid: [app/state.md](../../app/state.md#the-lid).
 
@@ -293,8 +361,11 @@ How Cymba reads and keeps the lid: [app/state.md](../../app/state.md#the-lid).
 | `0x0C` | Yellow |
 
 The table is LibrePods' Linux parser's. Every captured advertisement in
-`examples/decrypt_probe.rs`, from both models verified here, carries `0x00`, White. The
-rest is unverified.
+`examples/decrypt_probe.rs`, from both models verified here, carries `0x00`, White. So
+does every advertisement of the app logs from 2026-10-28 to 2026-11-10: 771 distinct
+ones from the Pro 3 and 100 from the Pro 2 (USB-C), in and out of the case, the lid open
+and closed, charging or not, connected to this host, to another host or to none
+([Runs](#runs)). The rest is unverified.
 
 How Cymba shows it: [app/ui.md](../../app/ui.md#model-and-color).
 
@@ -320,6 +391,28 @@ Some values come and go (Pro 3, 2026-10-25, #71):
 - `0x04` for one or two advertisements while the pods page the host they last used,
   after the lid opens or the pods leave the case, even when the page is rejected and
   nothing connects.
+
+In the app logs of 2026-10-28 to 2026-11-10 ([Runs](#runs)), byte 8 was `0x00`,
+`0x04`, `0x05`, `0x08` or `0x0c`:
+
+- **`0x05`** came 0.38 s and 81 ms after AAP's `0x0E` named this host with type `02`
+  ([aap/session.md](../aap/session.md#0x0e-the-audio-source)), and stayed while the link
+  was up, the pods in the case or out of it (Pro 3, 2026-11-10, 18:48:14.9 and
+  19:03:41.8). The exceptions were `0x00`, each from a pod just in the case: its `0x24`
+  and `0x04` after the lid opened on it ([The 2026-11-10 run](#the-2026-11-10-run)),
+  and the right pod's `0x51` at 18:56:24.984. In #71 capture 4 every `0x0E` had type
+  `00`, and byte 8 was `0x04` while this host was connected, with the same exceptions
+  (19:42:25, 19:42:43, 19:43:15). With the iPhone connected, it went between `0x04` and
+  `0x05` (#71 capture 4, 19:44:26-19:45:24).
+- **`0x0c`** came in four single advertisements, each followed 49-311 ms later by one
+  whose decrypted bytes 4-6 named another host: Pro 3, #71 capture 4 (19:44:02.220) and
+  the #62 rename check (16:43:23.839, 16:43:29.268); Pro 2 (USB-C), 2026-11-02
+  (19:26:25.372). Decrypted byte 10's high nibble was `f` in these four.
+- **`0x08`** came in three advertisements, at most two in a row, in the #64 check
+  (Pro 3, 2026-11-01, 16:34:59-16:35:00): the pods just out of the case, while
+  decrypted bytes 4-6 went from another host to the iPhone and back, before this host
+  connected at 16:35:06. Decrypted byte 10 was `0f` in one and `ff` in two; no other
+  advertisement had byte 10's high nibble `f`.
 
 ⚠️ **Byte 8 is the last cleartext byte;** everything from byte 9 on is encrypted. A
 parser reading "connection state" from byte 9 reads ciphertext, and its output is
@@ -359,22 +452,70 @@ tries: [app/identification.md](../../app/identification.md#what-counts).
 
 | Byte | Field | Source |
 |---|---|---|
-| 0 | Connection state, as cleartext byte 8; high bits unexplained | Pro 3, 2026-10-25, #71 |
+| 0 | Connection state, as cleartext byte 8; high bits unexplained | Pro 3, 2026-10-25, #71; both models, 2026-10-28 to 2026-11-10 |
 | 1 | Sending pod: bit 7 charging, bits 0-6 the level | Levels: both models, 2026-09-09/10; which pod: Pro 3, 2026-10-25, #71 |
 | 2 | Other pod: bit 7 charging, bits 0-6 the level | Levels: both models, 2026-09-09/10; which pod: Pro 3, 2026-10-25, #71 |
 | 3 | Case: bit 7 charging, bits 0-6 the level | Both models, 2026-09-09/10 |
-| 4-6 | The last three bytes of a host's address: the host last used or the host connected is [open](#open-questions) | Pro 3, 2026-10-25, #71 |
+| 4-6 | The last three bytes of a host's address, in the order `bluetoothctl` prints it: the host connected, kept after it disconnected until another host connected, but for one change after a disconnect, below | Pro 3, 2026-10-25, #71; both models, 2026-10-28 to 2026-11-10 |
 | 7-9 | The last three bytes of the pair's real MAC, or `00 00 00` unless both pods are in the case | Both models, 2026-09-09/10; Pro 3, #71 |
-| 10 | Unknown; `00` in every sample | Both models, 2026-09-09/10 |
-| 11 | Counts up slowly | Pro 3, 2026-10-25, #71 |
-| 12-15 | Unknown; change whenever the payload does | Pro 3, 2026-10-25, #71 |
+| 10 | Unknown; the values below | Both models, 2026-09-09/10 and 2026-10-28 to 2026-11-10 |
+| 11 | Unknown; bits 0-1, bits 2-3 and bit 4 change apart: below | Pro 3, 2026-10-25, #71; both models, 2026-10-28 to 2026-11-10 |
+| 12-15 | Unknown; different in every distinct payload | Pro 3, 2026-10-25, #71; both models, 2026-10-28 to 2026-11-10 |
+
+The bytes below are from the app logs of 2026-10-28 to 2026-11-10 ([Runs](#runs)) unless
+a sample says otherwise.
 
 - **Byte 0** equaled cleartext byte 8 in all 111 payloads of the second #71 capture:
   `00`, `04` and `08`. The September samples carry `0x10` on top on the Pro 3, and the
-  first #71 capture a `0x40`.
-- **Bytes 4-6** changed when this host connected, and changed back 1.4 s after it
-  disconnected (first #71 capture). Which host they name is
-  [open](#open-questions).
+  first #71 capture a `0x40`. In the app logs, its low nibble equaled byte 8 in every
+  advertisement, on both models.
+  - **`0x10` on top** came from the Pro 3 only. It was in every advertisement of the
+    PR #137 check's Pro 3 part and of the #64 check, and in none of #71 capture 4 or
+    #142's two sessions. In the #62 rename check it was there until both pods were in
+    the case (16:45:46), and not after. On 2026-11-10 each pod set it from 0.1-0.3 s
+    after its first advertisement from the case (the left pod at 18:51:29, the right at
+    18:56:24) to the end of the run, in the case and out of it, but for one
+    advertisement of the left pod (19:03:35.126).
+  - **`0x40` on top** (`0x44`) came on both models, in a few advertisements at a time,
+    each with byte 8 `04` and bytes 4-6 naming the iPhone: #71 capture 4 and
+    #142 session 1 (Pro 3), the PR #137 check and 2026-11-02 (Pro 2 (USB-C)).
+- **Bytes 4-6** carried the last three bytes of this host's adapter's address in the
+  order `bluetoothctl` prints it, as bytes 7-9 carry the pair's MAC. They changed when this host connected, and changed back 1.4 s after it
+  disconnected (first #71 capture). In the app logs they named the host connected, and
+  kept naming it after it disconnected, until another host connected:
+  - 2026-11-10: another host from the run's first advertisement until this host
+    connected (18:48:10); this host from then to the end, also while the link was down
+    with both pods in the case (19:02:28-19:03:37).
+  - #71 capture 4: this host, also while the link was down (19:40:38-19:42:08); the
+    iPhone from the advertisement after it took the pods and the link here was reset
+    (19:43:43.464); this host from its reconnection (19:43:46.931); the iPhone again
+    from 19:44:02.269, 49 ms before the link here was reset, to the end, through the
+    pods' stay in the closed case.
+  - The #62 rename check: another host from the link reset here at 16:43:29 until this
+    host connected at 16:46:26, also while byte 8 was `00` (16:45:52-16:46:26).
+- **Byte 10** held:
+
+  | Value | When |
+  |---|---|
+  | `00` | Byte 8 `00`, every time. This host connected: from 6-9 s after BlueZ reported the connection, in 13 of 15 connections; in the other two, no advertisement came after the last `0f`, at 7 s, until the first `00`, at 13 s and 31 s. Another host connected, not the iPhone: as well (the #62 rename check). The iPhone named, byte 8 `04`: once, between hosts (the #64 check, 16:35:00.227) |
+  | `0f` | From the advertisement in which byte 8 went to `04` as a host connected, or in which bytes 4-6 changed to a host that had just connected: until the `00` above, or for 0.3-1.5 s until `06` or `01` with the iPhone |
+  | `06` | Pro 3, the iPhone connected, after its `0f`, but for the two stretches below (#71 capture 4; #142 session 1) |
+  | `02` | Pro 3, the iPhone connected: 19:46:01-19:46:21, as both pods went into the case and the lid closed (#71 capture 4) |
+  | `01` | Pro 3, the iPhone connected: 19:47:06-19:47:26, after it connected again on the lid's opening, then `06` (#71 capture 4). Pro 2 (USB-C): every advertisement naming the iPhone after its `0f`, byte 8 `04` (the PR #137 check; the role switch run, 2026-11-02) |
+  | `f0`, `ff`, `f1` | The four advertisements with byte 8 `0c`, and two of the three with `08` ([Byte 8](#byte-8-connection-state)) |
+
+- **Byte 11** held:
+
+  | Bits | What they did |
+  |---|---|
+  | 0-1 | 1, 2 and 3 about 6 s, 31 s and 62 s after byte 8 went from `00` to `04` (#71 capture 4; the PR #137 check). 1, 2 and 3 about 5 s, 30 s and 60 s after this host disconnected from the worn pods (the PR #137 check). Back to 0 at each connection and disconnection of this host (the PR #137 check), and at byte 8's first `05` (#71 capture 4, twice, the iPhone connected), and 0 while byte 8 stayed `05`. On 2026-11-10: 1 at 6.8 s after byte 8 went to `04`, 0 again 1.1 s later in the first advertisement naming this host, and 0 from then to the end of the run, byte 8 `05` from 18:48:15 |
+  | 2-3 | 0 from the first advertisement with both pods in the case, every time (2026-11-10; #71 capture 4; #142 session 2; the #62 rename check; the PR #137 check). 1, 2 and 3 about 5 s, 30 s and 60 s after the first pod was taken out of the case with both in it (2026-11-10, 19:04:48; #71 capture 4, 19:41:45; the PR #137 check, 23:48:15), then unchanged. One pod going into the case left them as they were |
+  | 4 | Set in every advertisement naming the iPhone but two, with byte 8 `00` (#142 session 1, 17:00:08); and in the PR #137 check's advertisements naming this host after it disconnected from the worn pods, byte 8 `00`. Clear in every other advertisement, all of 2026-11-10 among them |
+  | 5-7 | 0 in every advertisement |
+
+- **Bytes 12-15** differed between every two distinct advertisements: 771 from the Pro 3
+  and 100 from the Pro 2 (USB-C). Two payloads equal in every other byte, from the same
+  address 53 ms apart, differed there (2026-11-10, 18:48:04.149 and 18:48:04.202).
 - **A level above 100** means the part is unavailable: with both pods worn, the
   decrypted case byte was `0xff` beside the cleartext case nibble `0xF` (Pro 3,
   2026-09-11, 17f6591).
@@ -460,8 +601,8 @@ Which levels Cymba shows: [app/identification.md](../../app/identification.md#ba
 | Closed lid | The pods stop advertising about 4 s after the lid closes | Pro 3, 2026-10-25 and 2026-11-01, #71 |
 | Discovery, or a monitor | When bluetoothd reports the pods' advertisements: [linux/bluez.md](../linux/bluez.md#discovery), and through an advertisement monitor [linux/bluez.md](../linux/bluez.md#discovery-and-directed-advertising) | |
 
-The payload gaps of 25 and 30 s are most likely what was once recorded here as a
-refresh every 20-30 s (a guess). On 2026-11-02, in each app run, each pod's payload
+Decrypted byte 11's bits 0-1 and 2-3 stepped at about these times, 5 s, 30 s and 60 s
+after an event ([Decrypted Format](#decrypted-format)). On 2026-11-02, in each app run, each pod's payload
 also changed once about 2 s after discovery started, then stayed (Pro 3, #153).
 
 **Which pod advertises:**
@@ -585,6 +726,31 @@ AirPods Pro 3 on one adapter (#71):
   lid closed. The September `0x51`/`0x59` vectors, all with the case charging, fit.
 - **Lid closed (capture 2):** both pods sent byte 6 = `0x39` within 22 ms of the marker
   and kept advertising for 3.9 s, then stopped.
+- **Capture 4** (19:38-19:48 UTC) went through role switches, one pod into the case and
+  the lid closed and opened on it, both pods into the closed case, the iPhone taking the
+  pods (19:43:43, and again from 19:44:02 to the end), and the case put on the charger
+  (19:46:12) ([aap/ear.md](../aap/ear.md#71-capture-4-pro-3-2026-11-01)).
+
+### The app logs of 2026-10-28 to 2026-11-02
+
+The app's own logs of other checks, each with every advertisement whole; AAP packets
+whole only where the table says so. No firmware version was logged. Their
+advertisements were decrypted here with each pair's ENC_KEY, as in
+[Decrypting BLE Advertisements](#decrypting-ble-advertisements). Times are UTC.
+
+| Run | Date, UTC | Model | Build, log | What the pods did |
+|---|---|---|---|---|
+| #136 | 2026-10-28, 20:21-20:25 | Pro 3 | a791646, `linuxpods=trace` | Worn |
+| The PR #137 check | 2026-10-28 23:47 to 2026-10-29 00:04 | Pro 3, then Pro 2 (USB-C) | 8bc90ba, `linuxpods=trace`, AAP packets cut to 8 bytes | Pro 3: into the case, the lid closed for 17 s and opened, out; this host connected and disconnected 14 times in 6 minutes, the pods worn; back into the case. Pro 2 (USB-C): the iPhone and this host taking it in turn |
+| The #64 check | 2026-11-01, 16:34-16:36 | Pro 3 | df17831, `linuxpods=debug`, AAP packets cut to 8 bytes | Out of the case; another host, the iPhone, then this host connecting |
+| #142 session 1 | 2026-11-01, 16:57-17:16 | Pro 3 | df17831, `linuxpods=debug`, AAP packets cut to 8 bytes | Out of the ears and back; the iPhone took the pods twice ([aap/ear.md](../aap/ear.md#session-1-pro-3-2026-11-01)) |
+| The #62 rename check | 2026-11-01, 16:43-16:49 | Pro 3 | df17831, `linuxpods=debug`, AAP packets cut to 8 bytes | Another host took the pods at 16:43:29; both into the case, the lid closed for 5 s (16:45:47-16:45:52), out; this host connected at 16:46:26 |
+| #142 session 2 | 2026-11-01, 17:21-17:25 | Pro 3 | a local build of df17831, `linuxpods=debug`, AAP packets up to 64 bytes | Role switches, each pod into the case with the lid open and closed, both into the case and out ([aap/ear.md](../aap/ear.md#session-2-pro-3-2026-11-01)) |
+| #62 first pairing | 2026-11-01, 17:36-17:39 | Pro 2 (USB-C) | 8d6938e, `linuxpods=debug`, AAP packets cut to 8 bytes | Both in the case, the case at 1%; the lid opened, paired again, out |
+| Role switch | 2026-11-02, 19:25-19:29 | Pro 2 (USB-C) | d289626, `linuxpods=trace` | The iPhone held the pods until this host connected at 19:26:25; worn, the primary out and back eight times ([aap/ear.md](../aap/ear.md#session-3-pro-2-usb-c-2026-11-02)) |
+
+#71 capture 4 and the 2026-11-10 run are logs of the same kind: "the app logs of
+2026-10-28 to 2026-11-10" are these eight and those two.
 
 ### The #184 run
 
@@ -700,23 +866,33 @@ of these rows. Bytes 3-8:
 
 ## Open questions
 
-- Status bits 0 and 7: unknown.
-- Byte 5 bit 7: unknown. It was set in every byte 5 captured here: `8f`, `95`, `98`,
-  `a5`, `a8`, `af`, `b5`, `f3`, `f5` (Pro 3, September, 2026-11-07 and 2026-11-10)
-  and `f1` (Pro 2 (USB-C), September).
-- Byte 6 bits 0-2: what they count; they are not a lid-open counter.
-- Byte 6: why the right pod sent `0x11` from the open case in capture 2 of #71.
-- Byte 8: what `0x08` and `0x0c` mean during connection setup.
-- Decrypted byte 0: what its high bits (`0x10`, `0x40`) mean. Do not validate against
-  it.
-- Decrypted bytes 4-6: the byte order in which they carry the host's address, and
-  whether they name the host last used or the host connected: in capture 1 of #71 they
-  changed back 1.4 s after this host disconnected, while in capture 2 they named this
-  host in every payload, connected or not.
-- Decrypted byte 10: unknown; `00` in every sample.
-- Decrypted byte 11: what it counts.
-- Decrypted bytes 12-15: unknown; they change whenever the payload does, and may be a
-  MIC (a guess).
+- Status bit 0: what it means. With an AAP link up it matched `0x08`'s `SS` but twice;
+  what it follows with no link is open ([Byte 3](#byte-3-status-byte)).
+- Status bit 7: what it means, and whether any state sets it; it was clear in every
+  advertisement here.
+- Status bit 6: why the left pod sent `0x69`, bit 6 set, from out of the case (#71
+  capture 4, 19:39:57.685).
+- Byte 5 bit 7: what it means; it was set in every byte 5 captured here, on both models
+  ([Byte 5](#byte-5-charging-status)).
+- Byte 6 bits 0-2: what they count. They are not a lid-open counter; what they did is
+  under [Byte 6](#byte-6-lid-state).
+- Byte 6's high nibble: why a pod in the open case sent `0x1` after the lid opened, for
+  over two minutes in some runs and not at all in others, as the right pod's `0x11` in
+  capture 2 of #71 did; why `0x5` came beside a case byte 5 called not charging (#142
+  session 2); and what the Pro 2 (USB-C)'s `0x7` is ([Byte 6](#byte-6-lid-state)).
+- Byte 8: what `0x05` says, which stood while this host's link was up, the pods in the
+  case or out of it (2026-11-10); and what `0x08` and `0x0c` mean. Both came only in single advertisements, or two
+  in a row, as a connection was set up or the pods went from one host to another
+  ([Byte 8](#byte-8-connection-state)).
+- Decrypted byte 0: what its high bits (`0x10`, `0x40`) mean, and what sets and clears
+  `0x10`. Do not validate against it.
+- Decrypted bytes 4-6: whether anything but a host connecting changes them. In capture 1
+  of #71 they changed back 1.4 s after this host disconnected; which host they named
+  then was not recorded.
+- Decrypted byte 10: what its values mean; `06`, `02` and `01` came only with the
+  iPhone connected.
+- Decrypted byte 11: what bits 0-1, bits 2-3 and bit 4 count or say.
+- Decrypted bytes 12-15: what they are.
 - The payload length: every payload seen is 25 bytes. Whether a payload of another
   length keeps the encrypted bytes at byte 9 or at the end is unknown.
 - Cleartext nibbles `0xB`-`0xE`: never recorded here.
