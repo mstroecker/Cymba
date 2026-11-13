@@ -228,6 +228,21 @@ first advertisement.
 #184's `24 f5` is the same: the left pod in the case, around the lid opening, sent `f`
 for the right pod worn at 80% ([The #184 run](#the-184-run)).
 
+**The decrypted byte of a part reads `ff` wherever its cleartext nibble reads `f`:**
+level 127, unknown, and bit 7, charging, set, whatever byte 5 says of that part (Pro 3,
+2026-11-10; the run's 129 distinct payloads decrypted with the pair's key, as
+`examples/decrypt_probe.rs` does, 2026-11-13, #206).
+
+- Decrypted byte 2, the other pod, was `ff` in every payload with byte 4's high nibble
+  `f`, and decrypted byte 3, the case, in every one with byte 5's low nibble `f`; in no
+  other payload.
+- In `24 fa 95` and `04 fa 95`, byte 5 sets the sender's charging bit alone, while
+  decrypted bytes 1 and 2 both have bit 7 set: `e4`, the sender at 100% and charging,
+  and `ff`. Read from the decrypted bytes, both pods charge.
+- In `8f` and `af`, byte 5's case-charging bit is clear, and decrypted byte 3 is `ff`.
+- Where the level was known, bit 7 of decrypted bytes 1-3 matched byte 5's charging
+  bit for the same part in every payload.
+
 ### Byte 5: Charging Status
 
 | Bit | Meaning |
@@ -518,7 +533,8 @@ a sample says otherwise.
   address 53 ms apart, differed there (2026-11-10, 18:48:04.149 and 18:48:04.202).
 - **A level above 100** means the part is unavailable: with both pods worn, the
   decrypted case byte was `0xff` beside the cleartext case nibble `0xF` (Pro 3,
-  2026-09-11, 17f6591).
+  2026-09-11, 17f6591). Its bit 7 is set then, whatever byte 5 says of the part:
+  [The other pod's fields](#the-other-pods-fields).
 - The samples behind this table: [Runs](#runs).
 
 ### Decryption Validation
