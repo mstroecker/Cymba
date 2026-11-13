@@ -18,7 +18,8 @@ LinuxPods: updating from it keeps your keys, last readings and settings
 ([what moves](docs/app/from-linuxpods.md)).
 
 <p align="center">
-  <img src="docs/images/control-tab.png" alt="Cymba window: device switcher in the header bar, battery levels for both pods and the case, noise control modes, Conversation Awareness, and the Info group with the name, model, color and firmware version" width="360">
+  <img src="docs/images/control.png" alt="Cymba window on the Control page: battery levels for both pods, worn in the ears, and the case, the connection status, the Noise Control modes with Noise Cancellation selected, and Conversation Awareness switched on" width="360">
+  <img src="docs/images/preferences.png" alt="Cymba window with Preferences open over the Control page: the General group with Auto-connect not available yet and switches for battery notifications, nearby notifications and pausing when a pod is taken out, and the Development group listing the connected AirPods Pro 3" width="360">
 </p>
 
 > [!WARNING]
