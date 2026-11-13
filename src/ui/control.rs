@@ -534,14 +534,14 @@ pub(super) fn offers_connect(snapshot: &Snapshot, mac: Address) -> bool {
         && !snapshot.is_connected(mac)
 }
 
-/// Whether the last live advertisement of `mac` says both pods are in the
-/// case: [`PodState::out_of_case`], so never from a restored reading or AAP -
-/// see docs/app/ui.md#the-connect-banner.
+/// Whether the state the snapshot reports for `mac` has both pods charging,
+/// as pods in the case are, whatever the reading came from - see
+/// docs/app/ui.md#the-connect-banner.
 pub(super) fn in_the_case(snapshot: &Snapshot, mac: Address) -> bool {
     snapshot
         .states
         .get(&mac)
-        .is_some_and(|state| state.out_of_case == Some(false))
+        .is_some_and(|state| state.left_charging && state.right_charging)
 }
 
 /// What the connect banner and the header's spinner show for the pair on
@@ -1175,44 +1175,78 @@ mod tests {
         );
     }
 
-    /// Both pods are in the case while the last live advertisement has both
-    /// charging, as the Pro 3's `35 a9 b5` on 2026-11-10: not with one pod
-    /// charging alone in the case - the left pod's `24 fa 95`, status bit 2
-    /// set with the right pod worn - nor its worn partner's `13 aa a5`, nor
-    /// both out with `0b aa 8f`; and not from a restored reading or one over
-    /// AAP, whatever their charging.
+    /// The banner of a paired pair with no connect under way, from the state
+    /// the snapshot reports, whatever the reading came from: in the case,
+    /// Connect taking no press, with both pods charging - a reading restored
+    /// at startup with the lid closed, or a live one as the Pro 3's
+    /// `35 a9 b5` of 2026-11-10 - and not connected, Connect pressable, with
+    /// one pod charging alone - a restored reading, the left pod's
+    /// `24 fa 95`, status bit 2 set with the right pod worn, or its partner's
+    /// `13 aa a5` - or with neither, as a live `0b aa 8f`. Another pair's
+    /// reading does not count.
     #[test]
-    fn in_the_case_while_a_live_advertisement_has_both_pods_charging() {
-        let of = |state: PodState| Snapshot {
-            states: HashMap::from([(MAC_1, state)]),
-            ..Default::default()
+    fn the_banner_reads_both_pods_charging_from_the_reported_state() {
+        let in_case = ConnectShown {
+            revealed: true,
+            title: "Your AirPods are in the case",
+            button: "Connect",
+            pressable: false,
+            spinning: false,
         };
-        assert!(in_the_case(
-            &of(PodState::advertised(0x35, 0xa9, 0xb5)),
-            MAC_1
-        ));
-        assert!(!in_the_case(
-            &of(PodState::advertised(0x35, 0xa9, 0xb5)),
-            MAC_2
-        ));
-        for (status, battery, charging) in
-            [(0x24, 0xfa, 0x95), (0x13, 0xaa, 0xa5), (0x0b, 0xaa, 0x8f)]
-        {
-            let state = PodState::advertised(status, battery, charging);
-            assert!(
-                !in_the_case(&of(state), MAC_1),
+        let not_connected = ConnectShown {
+            revealed: true,
+            title: "Your AirPods are not connected",
+            button: "Connect",
+            pressable: true,
+            spinning: false,
+        };
+        let shown = |state: PodState, mac: Address| {
+            let snapshot = Snapshot {
+                device_names: HashMap::from([(
+                    MAC_1,
+                    DeviceNames {
+                        alias: "Kitchen".into(),
+                        name: None,
+                    },
+                )]),
+                states: HashMap::from([(mac, state)]),
+                ..Default::default()
+            };
+            connect_shown(
+                offers_connect(&snapshot, MAC_1),
+                false,
+                in_the_case(&snapshot, MAC_1),
+            )
+        };
+        let restored = |left_charging: bool, right_charging: bool| {
+            let mut state = PodState::empty(DataSource::Ble);
+            state.restored = true;
+            state.left_charging = left_charging;
+            state.right_charging = right_charging;
+            state
+        };
+
+        assert_eq!(shown(restored(true, true), MAC_1), in_case);
+        assert_eq!(shown(restored(true, false), MAC_1), not_connected);
+        assert_eq!(shown(restored(false, true), MAC_1), not_connected);
+        assert_eq!(
+            shown(PodState::advertised(0x0b, 0xaa, 0x8f), MAC_1),
+            not_connected
+        );
+        assert_eq!(
+            shown(PodState::advertised(0x35, 0xa9, 0xb5), MAC_1),
+            in_case
+        );
+        assert_eq!(
+            shown(PodState::advertised(0x35, 0xa9, 0xb5), MAC_2),
+            not_connected
+        );
+        for (status, battery, charging) in [(0x24, 0xfa, 0x95), (0x13, 0xaa, 0xa5)] {
+            assert_eq!(
+                shown(PodState::advertised(status, battery, charging), MAC_1),
+                not_connected,
                 "{status:02x} {charging:02x}"
             );
         }
-
-        let mut restored = PodState::empty(DataSource::Ble);
-        restored.restored = true;
-        restored.left_charging = true;
-        restored.right_charging = true;
-        assert!(!in_the_case(&of(restored), MAC_1));
-        let mut aap = PodState::empty(DataSource::Aap);
-        aap.left_charging = true;
-        aap.right_charging = true;
-        assert!(!in_the_case(&of(aap), MAC_1));
     }
 }
