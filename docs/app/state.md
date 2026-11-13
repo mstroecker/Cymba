@@ -28,7 +28,7 @@ GNOME Settings battery was withdrawn and exported again on every reconnect.
 | In-ear | The link's ear state once it has both packets, else the cached advertisement: [in-ear.md](in-ear.md) |
 | Lid, connection state | The cached advertisement: AAP carries neither, as far as is known |
 | A pod out of the case | The cached advertisement, for a BLE reading alone: none over AAP, nor for a restored reading ([nearby.md](nearby.md#what-is-notified)) |
-| The host bytes 4-6 name ([open](../protocol/ble/proximity-pairing.md#open-questions)) | The cached advertisement, for a BLE reading alone, as a pod out of the case ([nearby.md](nearby.md#when-the-pods-say-they-will-not-come)) |
+| The host bytes 4-6 name ([protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#decrypted-format)) | The cached advertisement, for a BLE reading alone, as a pod out of the case ([nearby.md](nearby.md#when-the-pods-say-they-will-not-come)) |
 | Model, color | The identity the link holds, taken from the cached advertisement as the link comes up and refreshed by every one after, so it outlives the cache entry |
 | Noise mode, Conversation Awareness, speech level, the pods' name | The link alone: [noise-control.md](noise-control.md), [conversation-awareness.md](conversation-awareness.md), [names.md](names.md) |
 | Firmware version | `Inner::firmware_versions`, kept for the run: [firmware.md](firmware.md) |

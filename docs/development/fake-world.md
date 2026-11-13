@@ -36,7 +36,7 @@ The pipeline tests drive the same world from the test process.
 | Battery after the notification request | At once, unless `report_delay_ms` is set | Later: [protocol/aap/session.md](../protocol/aap/session.md#initial-state-report) |
 | Startup dump | `DUMP_DELAY` after the first `0x0C`, unless `dump_delay_ms` is set. Any delay keeps the order: battery and ears first, the mode later. | Later: [protocol/aap/session.md](../protocol/aap/session.md#initial-state-report) |
 | One pod worn, the other in the closed case | The worn pod advertises its partner's level and sets status bit 4 | The worn Pro 3 sent `f` for its partner's level and bit 4 clear (2026-11-07, #184): [protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#the-184-run) |
-| Host named (plaintext bytes 4-6) | `FAKE_LAST_HOST`, whatever the pods connect to: no fake adapter's, so a nearby notification is shown at once ([app/nearby.md](../app/nearby.md#when-the-pods-say-they-will-not-come)) | A host's address, the host last used or the one connected being [open](../protocol/ble/proximity-pairing.md#open-questions), seen on one Pro 3 (#71): [protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#decrypted-format) |
+| Host named (plaintext bytes 4-6) | `FAKE_LAST_HOST`, whatever the pods connect to: no fake adapter's, so a nearby notification is shown at once ([app/nearby.md](../app/nearby.md#when-the-pods-say-they-will-not-come)) | The host connected, kept after it disconnects until another host connects (Pro 3 and Pro 2 (USB-C), 2026-10-28 to 2026-11-10): [protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#decrypted-format) |
 | Status bit 2 | Set exactly when both pods are in the case | Also set by a pod in the case with its partner out, in its first advertisements after a change (Pro 3, 2026-11-10): [protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#byte-3-status-byte) |
 | Charging | A pod put in the case charges and one taken out stops, unless a test calls `Pods::set_charging` after; so both charging bits are set exactly while both pods are in the case, and the fake world never sends the stale reading `nearby::IN_CASE_SETTLE` waits out ([app/nearby.md](../app/nearby.md#a-pull-out)). Over AAP a pod in the case reports Charging (`01`), never `05` | A pod in the case charges, and one advertisement set both bits 0.2 s after a pod came out: [protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#byte-5-charging-status). Status `05` from pods in the open case: [protocol/aap/battery.md](../protocol/aap/battery.md#status-05) |
 | The other pod's fields | Each advertisement carries the other pod's level at once, and the case's but for a pod out of the case beside one in the closed case | The other pod's level `f`, unknown, until the pods have exchanged state; the case's `f` with no pod in the case, and at times from a worn pod beside one in the open case (Pro 3, 2026-11-10): [protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#the-other-pods-fields) |
@@ -155,8 +155,8 @@ As in the #71 captures:
 - **The address:** a resolvable private address that the pair's IRK resolves (#134).
 - **The MAC suffix** (plaintext bytes 7-9) is there only while both pods are in the
   case, and `00 00 00` otherwise.
-- **Plaintext bytes 12-15** follow from the rest of the payload, as a MIC would, so they
-  change with it and only with it.
+- **Plaintext bytes 12-15** follow from the rest of the payload, so they change with it
+  and only with it.
 
 `Flood` brings advertisers that no key decrypts and no IRK resolves, each from an
 address of its own.

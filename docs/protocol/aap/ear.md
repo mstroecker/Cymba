@@ -44,7 +44,7 @@ Both come unasked, on every change, and once each right after the link comes up,
 |---|---|---|
 | 6 (`PP`) | `01`, `02` | The primary pod: `01` left, `02` right. |
 | 7 | `00` | Always `00`. |
-| 8 (`SS`) | `01`, `00` | `01` while the secondary pod can be reached, `00` with it in the closed case (once), matching `0x06`'s `03`. |
+| 8 (`SS`) | `01`, `00` | `01` while the secondary pod can be reached, `00` with it in the closed case, matching `0x06`'s `03`. |
 | 9 (`TT`) | `01`, `00` | `01` in the first packet of a role switch, `00` in a second one, `PP` the new primary in both. Possibly "switch in progress", a guess. Once `01` came with no switch, when the second pod came out with both then out, followed by an `00` with `PP` unchanged (Pro 3, #71 capture 4). |
 
 The second `0x08` of a switch came 28-291 ms after the first on the Pro 2 (USB-C), and

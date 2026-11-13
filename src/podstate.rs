@@ -319,11 +319,8 @@ pub struct PodState {
     pub out_of_case: Option<bool>,
 
     /// The last three bytes of a host's address, as the advertisement behind
-    /// a BLE reading says: decrypted bytes 4-6,
-    /// seen on one Pro 3 and unconfirmed
-    /// (`docs/protocol/ble/proximity-pairing.md#decrypted-format`); whether
-    /// they name the host last used or the host connected is open
-    /// (`docs/protocol/ble/proximity-pairing.md#open-questions`). `None`
+    /// a BLE reading says: decrypted bytes 4-6
+    /// (`docs/protocol/ble/proximity-pairing.md#decrypted-format`). `None`
     /// over AAP and for a restored reading: only a live advertisement tells
     /// it.
     pub last_host: Option<[u8; 3]>,

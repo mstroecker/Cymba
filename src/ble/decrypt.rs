@@ -15,10 +15,8 @@ pub use crate::KEY_LEN;
 const MAC_SUFFIX_RANGE: std::ops::Range<usize> = 7..10;
 
 /// Where the last three bytes of a host's address sit inside the decrypted
-/// payload: seen on one Pro 3 (#71), unconfirmed
-/// (`docs/protocol/ble/proximity-pairing.md#decrypted-format`). Whether they
-/// name the host last used or the host connected, and their byte order, are
-/// open (`docs/protocol/ble/proximity-pairing.md#open-questions`).
+/// payload, and which host they name:
+/// `docs/protocol/ble/proximity-pairing.md#decrypted-format`.
 pub(crate) const LAST_HOST_RANGE: std::ops::Range<usize> = 4..7;
 
 /// What sits there instead unless both pods are in the case (status bit 2,
@@ -50,10 +48,10 @@ pub enum DecryptError {
 /// Unless both pods are in the case the suffix reads `00 00 00` instead; see
 /// [`matches_device`], which accepts either.
 ///
-/// Layout confirmed on two models; byte 0 following the connection state and
-/// byte 11 counting were seen on one Pro 3 (#71). Bytes 4-6 - placeholders
-/// here - are a host's address suffix, seen on one Pro 3 (#71) and
-/// unconfirmed - see [`LAST_HOST_RANGE`]:
+/// Layout confirmed on two models. Bytes 4-6 - placeholders here - are a
+/// host's address suffix: see [`LAST_HOST_RANGE`]. The other fields:
+/// `docs/protocol/ble/proximity-pairing.md#decrypted-format`. The September
+/// samples:
 /// ```text
 /// Pro 3  (0x2027): 10 be be 9f a1 a2 a3 [DD EE FF] 00 00 a7 8a b5 cc
 /// Gen 2  (0x2024): 00 e4 e4 8e a1 a2 a3 [44 55 66] 00 00 3b a2 15 bd
@@ -126,8 +124,8 @@ pub fn decrypt_raw(encrypted: &[u8], key: &[u8]) -> Result<[u8; ENCRYPTED_LEN], 
 #[cfg(any(test, feature = "harness"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plaintext {
-    /// Byte 0: the connection state, as cleartext byte 8 has it, in the #71
-    /// captures; the September samples carry 0x10 on top on Pro 3, unexplained.
+    /// Byte 0: the connection state in its low nibble; high bits unexplained
+    /// (`docs/protocol/ble/proximity-pairing.md#decrypted-format`).
     pub header: u8,
     /// Byte 1, the primary pod: the left one unless the advertisement says the
     /// right is primary. Each battery byte holds the level in bits 0-6 - `None`
@@ -140,8 +138,8 @@ pub struct Plaintext {
     /// Byte 3.
     pub case_battery: Option<u8>,
     pub case_charging: bool,
-    /// Bytes 4-6: the last three bytes of a host's address, seen on one Pro 3
-    /// (#71) and unconfirmed - see [`LAST_HOST_RANGE`].
+    /// Bytes 4-6: the last three bytes of a host's address - see
+    /// [`LAST_HOST_RANGE`].
     pub last_host: [u8; 3],
     /// Bytes 7-9: the last three bytes of the real MAC, or [`ZEROED_SUFFIX`]
     /// unless both pods are in the case.
@@ -353,8 +351,8 @@ mod tests {
 
     #[test]
     fn round_trips_gen2_layout() {
-        // Gen 2 (0x2024) reports byte 0 = 0x00 where Pro 3 reports 0x10; both carry
-        // the MAC suffix, which is why validation keys on that and nothing else.
+        // The Pro 2 (USB-C) sample has byte 0 = 0x00 where the Pro 3 sample has
+        // 0x10; both carry the MAC suffix, which is why validation keys on that and nothing else.
         let key = random_key();
         let mac = Address::new([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
         let plain = Plaintext {

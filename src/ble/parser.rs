@@ -74,12 +74,10 @@ pub struct ProximityData {
     pub raw_data: Vec<u8>,
 
     pub has_decrypted: bool,
-    /// Decrypted bytes 4-6: the last three bytes of a host's address. Seen on
-    /// one Pro 3 (#71) and unconfirmed
-    /// (`docs/protocol/ble/proximity-pairing.md#decrypted-format`); the byte
-    /// order, and whether they name the host last used or the host connected,
-    /// are open (`docs/protocol/ble/proximity-pairing.md#open-questions`).
-    /// `None` until decrypted.
+    /// Decrypted bytes 4-6: the last three bytes of a host's address, which
+    /// host and in which order as
+    /// `docs/protocol/ble/proximity-pairing.md#decrypted-format` says. `None`
+    /// until decrypted.
     pub last_host: Option<[u8; 3]>,
 }
 
@@ -339,7 +337,7 @@ impl Cleartext {
         // 0x11 from a pod out of the case, 0x31 from one in a case that is not
         // charging and 0x51 from one in a charging case, 0x39 and 0x59 with the
         // lid closed. Nobody has explained bit 7. The low bits are 1 here; the
-        // hardware's go to 2 once the pods have been put back in the case.
+        // hardware's: `docs/protocol/ble/proximity-pairing.md#byte-6-lid-state`.
         let lid = match self.lid_open {
             None => 0x11,
             Some(open) => {
