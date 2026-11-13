@@ -108,6 +108,8 @@ update, and the row is still to be checked on a pair (#161). See [`docs/app/firm
 | Low battery notifications, at 20% and 5% as UPower's defaults, with a switch in Preferences | ✅ |
 | Preferences kept across restarts, in the XDG config directory | ✅ |
 | Media paused when a pod is taken out, and played again once it is back, with a switch in Preferences | 🚧 |
+| Connecting a known pair from the window, from a banner at its top | 🚧 |
+| A notification with a Connect button when a known pair is back nearby, out of its case and not connected, with a switch in Preferences | 🚧 |
 
 Taking a pod out of an ear pauses every media player that is playing, and putting it
 back plays them again, as on an iPhone - for a pair connected here, while audio plays to
@@ -116,6 +118,13 @@ again once both are back; with one pod worn and the other in the case, taking th
 one out pauses too. A pod put in the case forgets the pause, and a player you played or
 stopped meanwhile is left as you left it. The switch in Preferences is on by default.
 Not yet tried on a pair (#167); see [`docs/app/media-pause.md`](docs/app/media-pause.md).
+
+A pair the app knows that is not connected to this computer - heard in its case, or worn
+while on a phone - shows a banner at the top of the window, "Your AirPods are not
+connected", whose Connect button asks Bluetooth to connect it. Tried on a Pro 3
+(2026-11-08): it takes the AirPods from an iPhone, idle or playing, which gives them up;
+from another phone or computer it is not tried yet (#195); see
+[`docs/app/ui.md`](docs/app/ui.md#the-connect-banner).
 
 ### Unexplored
 
@@ -228,10 +237,16 @@ The window shows the three battery levels, charging state and in-ear detection; 
 them which source the reading came from, and in the Info group the model and its color. With more than
 one pair to show - each one it holds a key for, and each one connected over AAP - the
 header bar switches between them. **Preferences**, in the main menu, lists every one of
-them with its encryption key status, turns low battery notifications off and on, and
-pausing the media when a pod is taken out. Both switches are kept across restarts, in
-`~/.config/cymba/settings.json`. Low battery
-notifications need the launcher entry that `make install` writes: GNOME Shell shows none
+them with its encryption key status, turns low battery notifications off and on,
+nearby notifications, and pausing the media when a pod is taken out. The switches are
+kept across restarts, in `~/.config/cymba/settings.json`. A nearby notification comes
+when a known pair is heard again after half an hour or after the computer wakes from
+sleep, and when you take a pod out of its case after the pods have rested in it for a
+little while: a few seconds later, or at once when the AirPods seem to have been last
+used with another device or to be playing on one, with a pod out of the case, while the
+pair is not connected here and you are at the desktop. Its
+**Connect** button connects the pair.
+Notifications need the launcher entry that `make install` writes: GNOME Shell shows none
 for an app it has no desktop entry for. While Cymba scans in a way that can keep
 other Bluetooth devices from reconnecting, Preferences says so at the top: see
 [Troubleshooting](#troubleshooting).
@@ -311,7 +326,7 @@ Debug logging reports each protocol stage separately
 ```
 BLE parsable: 4B:11:22:33:44:55 model=0x2027 payload=25B
 BLE decryptable: 4B:11:22:33:44:55 -> AA:BB:CC:DD:EE:FF (address resolved)
-BLE 4B:11:22:33:44:55 [decrypted]: left=Some(75) right=Some(73) case=Some(61) lid_open=None one_in_case=false in_ear=true/true
+BLE 4B:11:22:33:44:55 [decrypted]: left=Some(75) right=Some(73) case=Some(61) lid_open=None pod_in_open_case=false in_ear=true/true
 AAP connected to AA:BB:CC:DD:EE:FF (cid 2822) in 412 ms
 ```
 

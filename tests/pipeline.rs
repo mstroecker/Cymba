@@ -32,7 +32,7 @@
 //!
 //! Every key is generated at runtime, by the fake pairs; none is in the source.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -3515,6 +3515,35 @@ async fn an_adapter_plugged_in_gets_a_provider_and_unplugged_takes_it_along() {
     fixture.until_batteries_on(HCI0, &first).await;
 }
 
+/// This computer's adapters' addresses reach the snapshot: the one read at
+/// startup, one plugged in beside it, announced, and the first alone once
+/// that is unplugged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_snapshot_has_every_adapters_address() {
+    let fixture = Fixture::new(&[(PAIR, PRO_3, PAIR_LEVELS)]).await;
+    let mut app = fixture.start_app().await;
+    // The fake BlueZ's first and second adapters, as `harness::bluez`
+    // numbers them.
+    let hci0 = Address::new([0x00, 0x00, 0x5E, 0x00, 0x53, 0xF0]);
+    let hci1 = Address::new([0x00, 0x00, 0x5E, 0x00, 0x53, 0xF1]);
+    let first = Some(BTreeSet::from([hci0]));
+    app.until("the first adapter's address", |s| {
+        s.adapter_addresses == first
+    })
+    .await;
+
+    fixture.world.add_adapter(HCI1, true).await.unwrap();
+    let both = Some(BTreeSet::from([hci0, hci1]));
+    app.until("both adapters' addresses", |s| s.adapter_addresses == both)
+        .await;
+
+    fixture.world.remove_adapter(HCI1).await.unwrap();
+    app.until("the first adapter's alone", |s| {
+        s.adapter_addresses == first
+    })
+    .await;
+}
+
 /// bluetoothd restarting forgets every client's discovery and battery
 /// providers, and says so only by leaving the bus and coming back: its
 /// adapters, and the pair's connection, are as they were. The app registers
@@ -4263,4 +4292,52 @@ async fn a_connection_event_while_bluez_is_away_is_not_asked_about() {
         "AAP to the other pair"
     );
     assert!(app.updates.borrow().is_connected(PAIR), "the link went");
+}
+
+/// A connect asked of BlueZ, as the window's connect banner asks it, pages a
+/// pair that is paired and disconnected: BlueZ connects it, and the app
+/// attaches it as for any connect - the snapshot has it attached and on
+/// AAP. Disconnected again, it is attached no longer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_connect_asked_of_bluez_attaches_the_pair() {
+    let fixture = Fixture::new(&[(PAIR, PRO_3, PAIR_LEVELS)]).await;
+    let mut app = fixture.start_app().await;
+    let before = app
+        .until("BlueZ's names", |s| s.device_names.contains_key(&PAIR))
+        .await;
+    assert!(!before.is_attached(PAIR) && !before.is_connected(PAIR));
+    let conn = fixture.bus.connect().await.unwrap();
+
+    timeout(TIMEOUT, cymba::bluez::connect_device(&conn, PAIR))
+        .await
+        .expect("timed out connecting")
+        .expect("BlueZ connects the pair");
+    app.until("the pair attached and on AAP", |s| {
+        s.is_attached(PAIR) && s.is_connected(PAIR)
+    })
+    .await;
+    assert!(fixture.has_aap(PAIR).await);
+
+    fixture.world.disconnect(PAIR).await.unwrap();
+    app.until("the pair detached", |s| {
+        !s.is_attached(PAIR) && !s.is_connected(PAIR)
+    })
+    .await;
+}
+
+/// A connect asked while BlueZ is off the bus fails, and starts nothing: on
+/// a bus that activates bluetoothd, systemd's, a call to `org.bluez` would
+/// start it again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_connect_while_bluez_is_away_starts_nothing() {
+    let bus = PrivateBus::activating("org.bluez").expect("dbus-daemon starts");
+    let fixture = Fixture::on_bus(bus, &[(HCI0, true)], &[(HCI0, PAIR, PRO_3, PAIR_LEVELS)]).await;
+    let conn = fixture.bus.connect().await.unwrap();
+    fixture.world.bluez().stop().await.unwrap();
+
+    timeout(TIMEOUT, cymba::bluez::connect_device(&conn, PAIR))
+        .await
+        .expect("timed out connecting")
+        .expect_err("connected with BlueZ away");
+    assert_eq!(fixture.bus.activations(), 0, "BlueZ started");
 }

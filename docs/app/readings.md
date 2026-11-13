@@ -13,7 +13,7 @@ temporary file and renamed over the old one, as the keystore is
 
 | Kept | Not kept |
 |---|---|
-| The levels, the charging flags, the model and color, and when the advertisement was heard | In-ear, the lid, the connection state: stale by the time anything loads them. Nor the advertisement itself. |
+| The levels, the charging flags, the model and color, and when the advertisement was heard | In-ear, the lid, whether a pod is out of the case, the connection state: stale by the time anything loads them. Nor the advertisement itself. |
 
 So a closed lid stays on show while the app runs ([state.md](state.md#the-lid)), and not
 across a relaunch, as the lid may have been opened meanwhile.

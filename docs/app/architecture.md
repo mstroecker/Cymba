@@ -18,11 +18,14 @@ goes the other way is spawned on the runtime.
 
 | What | From | To | Channel |
 |---|---|---|---|
-| Snapshots of every pair's state | the coordinator | the window, the tray, attachment, the notifier | `tokio::sync::watch` (`Coordinator::subscribe`): [state.md](state.md#snapshots) |
+| Snapshots of every pair's state | the coordinator | the window, the tray, attachment, the notifiers | `tokio::sync::watch` (`Coordinator::subscribe`): [state.md](state.md#snapshots) |
 | The tray's window commands (show, quit) | the tray task | the main context | `async-channel` |
 | Low battery notices | `notify::run` | the main context, which sends them: [notifications.md](notifications.md) | `async-channel` |
+| Nearby notices | `nearby::run` | the main context, which sends them: [nearby.md](nearby.md) | `async-channel` |
+| Whether the user is at the desktop, and the resumes from sleep, counted, with when the last sleep began: one value | `presence::run` | `nearby::run` | `watch`: [nearby.md](nearby.md#at-the-desktop) |
 | A quit asked for by SIGTERM or SIGINT | `quit_on_signals` | the main context, which quits as the menu does | `async-channel` |
 | Commands to the AirPods | the window, the tray | the pair's link | its queue (`Coordinator::command`), the result back on a `oneshot`: [commands.md](commands.md) |
+| A connect asked for | `app.connect`, on the main context | BlueZ, from a task on the runtime | the result back on a `oneshot`, awaited on the main context: [bluez.md](bluez.md#connecting-a-pair) |
 | The Preferences switch for pausing on the ears | the main context | `media::Media` | `watch`: [media-pause.md](media-pause.md) |
 | Speech levels | the coordinator | `volume::Volume` | events (`Coordinator::speech_events`): [state.md](state.md#events) |
 | Each pod's place | the coordinator | `media::Media` | events (`Coordinator::ear_events`): [state.md](state.md#events) |
@@ -36,11 +39,13 @@ goes the other way is spawned on the runtime.
 | Task | What it does | Document |
 |---|---|---|
 | `ble_task` | An advertisement monitor on every powered adapter, discovery where there is none; each advertisement to the coordinator | [identification.md](identification.md), [bluez.md](bluez.md) |
-| `attachment::run` | Which pairs are attached; a supervisor per attached pair, which keeps its AAP link up; the GNOME Settings batteries | [aap-links.md](aap-links.md), [battery.md](battery.md), [bluez.md](bluez.md) |
+| `attachment::run` | Which pairs are attached; a supervisor per attached pair, which keeps its AAP link up; the GNOME Settings batteries; the adapters' addresses, to the snapshot | [aap-links.md](aap-links.md), [battery.md](battery.md), [bluez.md](bluez.md) |
 | `expiry_task` | Each minute, prunes the BLE cache and saves the readings when due | [state.md](state.md#the-ble-cache), [readings.md](readings.md) |
 | `volume::Volume::run` | Lowers the pair's volume while the user speaks | [volume.md](volume.md) |
 | `media::Media::run` | Pauses the media when a pod leaves an ear | [media-pause.md](media-pause.md) |
 | `notify::run` | Works out the low battery notices | [notifications.md](notifications.md) |
+| `presence::run` | Follows logind's session - whether the user is at the desktop - and takes resumes from sleep in, also with no session found | [nearby.md](nearby.md#at-the-desktop) |
+| `nearby::run` | Works out the nearby notices | [nearby.md](nearby.md) |
 | `tray_task` | The system tray | [ui.md](ui.md) |
 
 `main()` spawns `quit_on_signals` on every launch, outside that set: it turns SIGTERM and
@@ -68,7 +73,7 @@ Coordinator (state per pair, keyed by real MAC)
     ├─ AAP links ──────────> exact readings for every connected pair, one link each
     ├─ BLE scanner ────────> identified advertisements from every pair in range
     ├─ Per-pair choice ────> a link's reading supersedes BLE for its own pair only
-    ├─ Snapshots (watch) ──> window, tray, attachment (GNOME Settings), notifier
+    ├─ Snapshots (watch) ──> window, tray, attachment (GNOME Settings), notifiers
     └─ Events ─────────────> speech levels to the volume, places to the media pause
 ```
 
@@ -86,7 +91,7 @@ collapse onto one pair: [identification.md](identification.md). How the merge wo
 | Readings across a relaunch | [readings.md](readings.md) |
 | AAP links | [aap-links.md](aap-links.md) |
 | Commands to the AirPods | [commands.md](commands.md) |
-| BlueZ, zbus, adapters, battery providers | [bluez.md](bluez.md) |
+| BlueZ, zbus, adapters, battery providers, connecting a pair | [bluez.md](bluez.md) |
 | Battery levels and GNOME Settings | [battery.md](battery.md) |
 | In-ear | [in-ear.md](in-ear.md) |
 | Noise control | [noise-control.md](noise-control.md) |
@@ -96,6 +101,7 @@ collapse onto one pair: [identification.md](identification.md). How the merge wo
 | Names and rename | [names.md](names.md) |
 | Firmware | [firmware.md](firmware.md) |
 | Low battery notifications | [notifications.md](notifications.md) |
+| Nearby notifications, whether the user is at the desktop | [nearby.md](nearby.md) |
 | The window, Preferences, the tray | [ui.md](ui.md) |
 | Logs | [logging.md](logging.md) |
 | What LinuxPods left behind | [from-linuxpods.md](from-linuxpods.md) |

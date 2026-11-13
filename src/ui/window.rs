@@ -1,6 +1,6 @@
-//! The main window: header bar, primary menu and About dialog, and the update
-//! loops that draw the coordinator's snapshots and the scanner's state into
-//! them.
+//! The main window: header bar, connect banner, primary menu and About
+//! dialog, and the update loops that draw the coordinator's snapshots and the
+//! scanner's state into them.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -12,6 +12,7 @@ use bluer::Address;
 use gtk::{gio, glib};
 use tokio::sync::watch;
 
+use super::connect::Connecting;
 use super::control::{
     ControlView, choose_device, create_control_view, noise_mode_from_target, render_device,
     sync_device_list,
@@ -26,13 +27,14 @@ const RENDER_INTERVAL: Duration = Duration::from_millis(100);
 
 const WEBSITE: &str = "https://github.com/mstroecker/Cymba";
 
-/// Builds the window and wires it to the coordinator, and Preferences' scanning
-/// hint to `scan`. The caller presents it, so that `--minimized` can leave it
-/// built but hidden.
+/// Builds the window and wires it to the coordinator, Preferences' scanning
+/// hint to `scan`, and the connect banner and spinner to `connecting`. The
+/// caller presents it, so that `--minimized` can leave it built but hidden.
 pub fn activate(
     app: &adw::Application,
     coordinator: Arc<Coordinator>,
     scan: ScanControl,
+    connecting: Connecting,
 ) -> adw::ApplicationWindow {
     let updates = Rc::new(RefCell::new(coordinator.subscribe()));
     let scan_updates = Rc::new(RefCell::new(scan.state()));
@@ -70,6 +72,16 @@ pub fn activate(
         selected: RefCell::default(),
         last_snapshot: RefCell::default(),
         syncing: Cell::default(),
+        connecting: connecting.clone(),
+    });
+
+    // A connect starting or ending, whatever started it, redraws the banner
+    // and the spinner from the last snapshot.
+    let following = Rc::downgrade(&ui);
+    connecting.follow(move || {
+        if let Some(ui) = following.upgrade() {
+            ui.redraw();
+        }
     });
 
     // Switching mode is a command: it goes to the device's link, and the
@@ -192,6 +204,26 @@ pub fn activate(
         }
     ));
 
+    // Connecting runs `app.connect`, which anything outside the window can
+    // run as well; only the window's press toasts a failure - see
+    // `connect::press`. The press itself changes nothing on show: the banner
+    // follows the snapshot and the connect under way.
+    ui.control
+        .connect_banner
+        .connect_button_clicked(glib::clone!(
+            #[strong]
+            ui,
+            #[weak]
+            app,
+            #[weak]
+            toasts,
+            move |_| {
+                if let Some(mac) = *ui.selected.borrow() {
+                    super::connect::press(app.upcast_ref(), mac, &toasts);
+                }
+            }
+        ));
+
     ui.control
         .device_dropdown
         .connect_selected_notify(glib::clone!(
@@ -284,6 +316,8 @@ struct Ui {
     /// Set while `apply` updates the switcher, whose `selected-notify` would
     /// otherwise reach `select` and clobber the user's choice.
     syncing: Cell<bool>,
+    /// The pairs a connect is under way to, for the banner and the spinner.
+    connecting: Connecting,
 }
 
 impl Ui {
@@ -325,7 +359,8 @@ impl Ui {
     /// Preferences.
     fn render(&self, snapshot: &Snapshot) {
         let mac = *self.selected.borrow();
-        render_device(&self.control, snapshot, mac);
+        let connecting = mac.is_some_and(|m| self.connecting.contains(m));
+        render_device(&self.control, snapshot, mac, connecting);
         self.devices.update(snapshot);
     }
 
@@ -356,9 +391,10 @@ impl Ui {
     }
 }
 
-/// The window holds the Control page alone. Preferences and About open from the
-/// primary menu, as dialogs, rather than sitting beside it as tabs. Returns
-/// the overlay that shows the window's toasts.
+/// The window holds the Control page alone, under the header bar and the
+/// banner offering to connect. Preferences and About open from the primary
+/// menu, as dialogs, rather than sitting beside it as tabs. Returns the
+/// overlay that shows the window's toasts.
 fn setup_ui(win: &adw::ApplicationWindow, control: &ControlView) -> adw::ToastOverlay {
     let menu = gio::Menu::new();
     menu.append(Some("_Preferences"), Some("win.preferences"));
@@ -393,10 +429,12 @@ fn setup_ui(win: &adw::ApplicationWindow, control: &ControlView) -> adw::ToastOv
 
     let header_bar = adw::HeaderBar::new();
     header_bar.set_title_widget(Some(&title_box));
+    header_bar.pack_start(&control.connecting_spinner);
     header_bar.pack_end(&menu_button);
 
     let toolbar_view = adw::ToolbarView::new();
     toolbar_view.add_top_bar(&header_bar);
+    toolbar_view.add_top_bar(&control.connect_banner);
     toolbar_view.set_content(Some(&control.content));
 
     // A command that fails is an event, not a state of any control: it is

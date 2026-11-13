@@ -2,7 +2,8 @@
 //! group that do something.
 //!
 //! Stored at ~/.config/cymba/settings.json (XDG Base Directory):
-//! {"version": 1, "battery_notifications": true, "pause_on_ear": true}
+//! {"version": 1, "battery_notifications": true, "pause_on_ear": true,
+//!  "nearby_notifications": true}
 //!
 //! Every field has a default, and a missing field takes it, so a file from an
 //! older build loads. A field this build does not know is kept as it was read
@@ -49,6 +50,9 @@ pub struct Settings {
     /// Whether the media pauses when a pod leaves an ear, and plays again
     /// once it is back - see `crate::media`. On by default, as on an iPhone.
     pub pause_on_ear: bool,
+    /// Whether a known pair nearby again is notified, with a Connect
+    /// button - see `crate::nearby`. On by default.
+    pub nearby_notifications: bool,
     /// The fields this build does not know, from a newer build's file: kept
     /// and saved again as they were, so a change made here does not drop
     /// that build's settings.
@@ -62,6 +66,7 @@ impl Default for Settings {
             version: FORMAT_VERSION,
             battery_notifications: true,
             pause_on_ear: true,
+            nearby_notifications: true,
             extra: Map::new(),
         }
     }
@@ -395,6 +400,19 @@ mod tests {
         assert!(settings.battery_notifications);
     }
 
+    /// A file without the setting turns it on, and one that turned it off
+    /// keeps it off, with the settings it leaves out at their defaults.
+    #[test]
+    fn nearby_notifications_load_as_saved() {
+        let (store, _dir) = store_with(r#"{"version":1,"pause_on_ear":false}"#);
+        assert!(store.load().nearby_notifications);
+        let (store, _dir) = store_with(r#"{"version":1,"nearby_notifications":false}"#);
+        let settings = store.load();
+        assert!(!settings.nearby_notifications);
+        assert!(settings.battery_notifications);
+        assert!(settings.pause_on_ear);
+    }
+
     #[test]
     fn a_missing_file_means_the_defaults_and_writes_nothing() {
         let (store, dir) = store();
@@ -450,6 +468,7 @@ mod tests {
                 "version": 2,
                 "battery_notifications": true,
                 "pause_on_ear": true,
+                "nearby_notifications": true,
                 "auto_connect": true,
                 "x": {"y": [1]},
             })
@@ -470,6 +489,7 @@ mod tests {
                 "version": FORMAT_VERSION,
                 "battery_notifications": false,
                 "pause_on_ear": true,
+                "nearby_notifications": true,
             })
         );
     }
@@ -518,7 +538,12 @@ mod tests {
             serde_json::from_slice(&std::fs::read(store.path()).unwrap()).unwrap();
         assert_eq!(
             json,
-            serde_json::json!({"version": 1, "battery_notifications": true, "pause_on_ear": true})
+            serde_json::json!({
+                "version": 1,
+                "battery_notifications": true,
+                "pause_on_ear": true,
+                "nearby_notifications": true,
+            })
         );
     }
 

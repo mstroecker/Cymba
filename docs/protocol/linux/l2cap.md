@@ -3,7 +3,7 @@
 What the kernel's L2CAP sockets, and bluer's connect on top of them, do on a connect
 that an AAP client has to know. Read from the source of Linux 7.2 and bluer 0.17.4, and
 checked on hardware where a run below says so (Pro 3, 2026-10-28, #136; Pro 3 and Pro 2
-(USB-C), 2026-10-29, PR #137).
+(USB-C), 2026-10-29, PR #137; Pro 3, 2026-11-08, #195).
 
 The AAP client's connect is in `aap::client`; how the app waits for it:
 [app/aap-links.md](../../app/aap-links.md#connecting).
@@ -92,6 +92,14 @@ AAP connect to <MAC> returned with the channel still connecting (cid 0); waiting
 AAP channel to <MAC> came up after 463 ms pending
 AAP connected to <MAC> (cid 21254) in 463 ms
 ```
+
+**More connects: Pro 3, firmware 9A348, BlueZ 5.87, 2026-11-08, 5edd065,
+`RUST_LOG=cymba=debug` (#195).** Four AAP connects, at a launch with the pair connected
+and after the three pages that connected ([bluez.md](bluez.md#runs)):
+
+- 2 of the 4 returned with `cid 0`: the channel came up 484 ms later at the launch, and
+  202 ms later after the page to pods an idle iPhone held.
+- 2 returned with the channel up, in 160 ms and 370 ms.
 
 ## Open questions
 

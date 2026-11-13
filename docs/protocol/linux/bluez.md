@@ -2,12 +2,13 @@
 
 What bluetoothd does that a client has to know: discovery and what it blocks,
 advertisement monitors, adapters and restarts, starting bluetoothd, battery providers,
-the A2DP transport's volume, and a device's name and alias. Read from BlueZ 5.87's
+the A2DP transport's volume, connecting a device, and a device's name and alias. Read from BlueZ 5.87's
 source and documentation, and from the kernel's where a section says so; checked on
 hardware where a run below says so, and what was only read, not run, says so.
 
 The app talks to bluetoothd in `bluez`, `ble::scanner`, `attachment` and `volume`; what
 it does with these facts: [app/bluez.md](../../app/bluez.md),
+[app/ui.md](../../app/ui.md#the-connect-banner),
 [app/volume.md](../../app/volume.md), [app/names.md](../../app/names.md),
 [app/in-ear.md](../../app/in-ear.md).
 
@@ -271,6 +272,92 @@ volume of the pair's A2DP transport. It goes to the pods themselves (#150).
 
 What the app does with each of these: [app/volume.md](../../app/volume.md).
 
+## Device1.Connect
+
+**`Device1.Connect` pages the device** and connects the profiles it supports that are
+flagged to connect by themselves; one of them connected is success
+(`org.bluez.Device(5)`, BlueZ 5.87). Read in BlueZ 5.87's `src/device.c` and
+`src/error.c`; run here only where [Runs](#runs) says so.
+
+Which bearer `Connect` uses depends on what bluetoothd knows of the device. A device
+bonded over BR/EDR alone is paged over BR/EDR, and what follows here is that connect. A
+device bluetoothd also knows over LE may get an LE connect instead - chosen by its
+preference, its bonds and which bearer was seen last, or taken after a BR/EDR page
+timeout (`select_conn_bearer`, `dev_connect`, `device_profile_connected`, BlueZ 5.87
+`src/device.c`). Whether the pods' object is known over LE is open:
+[Open questions](#open-questions).
+
+- **Answered once the page and the profiles are done.** bluetoothd connects the profiles
+  one after another and replies only after the last has connected or failed, or at once
+  when the page fails (after an LE fallback, if any) (`connect_next` and
+  `device_profile_connected` in BlueZ 5.87's `src/device.c`). The
+  call can therefore take a page timeout, or a page and several profiles. To a Pro 3 with
+  both pods in the ears it replied about 1.2-1.6 s after the app logged `Connected` true,
+  in three runs (2026-11-08, #195, [Runs](#runs)).
+- **To pods in the closed case, no reply within 30 s,** when the caller stopped waiting
+  (Pro 3, 2026-11-08, #195, [Runs](#runs)). What bluetoothd replies in the end, and when,
+  is open: [Open questions](#open-questions).
+- **Among its refusals** (`device_connect_profiles`, and the page timeout from
+  `device_profile_connected`, or `browse_request_complete` when a search made the page):
+
+  | Case | Error |
+  |---|---|
+  | The adapter is off | `org.bluez.Error.NotReady`, `br-connection-adapter-not-powered` |
+  | A connect, or a service search, to the device is under way | `org.bluez.Error.InProgress`, `br-connection-busy` |
+  | The device did not answer the page | `org.bluez.Error.Failed`, `br-connection-page-timeout` |
+  | Nothing left to connect, none connected, services resolved on this connection | `org.bluez.Error.BREDR.ProfileUnavailable` |
+  | The service search cannot start | `org.bluez.Error.Failed`, `br-connection-sdp-search` |
+
+- **A caller that leaves the bus cancels only a service search.** A `Connect` searches
+  the device's services first when bluetoothd has none cached for it, or when it has
+  nothing left to connect and they were not resolved on this connection
+  (`device_connect_profiles`, `load_info`); the search is cancelled once the caller
+  leaves the bus (`browse_request_new`, `browse_request_exit`), its page with it
+  (`browse_request_cancel`). Nothing watches the caller during a page or the profiles
+  made without a search (`connect_next`, `device_profile_connected`).
+
+### A pair another host holds
+
+**A page takes the pods from an iPhone, idle or playing** (Pro 3, firmware 9A348, both
+pods in the ears, 2026-11-08, #195, [Runs](#runs)):
+
+- The pods played their connect sound, and `Connect` succeeded.
+- The iPhone gave them up and did not take them back; idle, it showed nothing.
+- Music playing on the iPhone stopped, and did not move to its speaker.
+
+A page while another kind of host has them - an Android phone, another computer - is
+**not tried here**. What else is known, LibrePods' part read in its source at
+[89356c0](https://github.com/librepods-org/librepods/tree/89356c08cea3db0b6b54792d9329d09a87cc85fa),
+not run:
+
+- **The iPhone taking the pods drops this host's link** (runs here):
+  [aap/session.md](../aap/session.md#0x0e-the-audio-source).
+- **LibrePods' Linux app asks the other host to let go, then connects by
+  `bluetoothctl connect`.** When any local MPRIS player starts playing,
+  `handleMediaStateChange` first sends `DISCONNECT_REQUEST` to LibrePods' Android app,
+  over its own CrossDevice socket to the phone - off unless turned on in its settings
+  (`crossdevice/enabled`, default `false`) - and then, if its AAP socket is not open,
+  `connectToAirPods(true)` runs `bluetoothctl connect` on the pair, unasked. It sends the
+  pods no AAP packet to take them over, and asks nothing of a host that is not LibrePods,
+  such as an iPhone (LibrePods 89356c0, `linux/main.cpp`, `handleMediaStateChange`,
+  `loadCrossDeviceEnabled`, `sendDisconnectRequestToAndroid` and `connectToAirPods`). It says nothing about what the other host does afterwards.
+- **LibrePods' Android app takes the pods over AAP** while connected to them at the same
+  time as another host: it reports owning the connection (`0x09` sub-command `0x06`,
+  `01`; [aap/settings.md](../aap/settings.md)), sends Smart Routing packets (`0x10`,
+  [aap/session.md](../aap/session.md#opcodes)) named "Hijackv2" and
+  "audioRoutingSetOwnershipToFalse" to the other host's address, then connects A2DP.
+  Its Hijackv2 request goes only with Apple's vendor ID spoofed in its Bluetooth stack;
+  taking the pods back after another host took them (`takeOver("reverse")`) skips that
+  check (`AirPodsService.kt`, `takeOver`; `IslandWindow.kt`), and its parser of an iPhone's answer says "not sure
+  if this is it - don't have an iphone" (`AACPManager.kt`; both under
+  `android/app/src/main/java/me/kavishdevar/librepods/`, LibrePods 89356c0).
+- **LibrePods' README** says up to two devices can be connected at once, and lists
+  multi-device connectivity as needing the vendor ID spoofed on Linux too
+  (`DeviceID = bluetooth:004C:0000:0000` in `main.conf`).
+
+So whether a page takes the pods from another kind of host, and what that host does then,
+is open: [Open questions](#open-questions).
+
 ## Device1.Name and Device1.Alias
 
 The pods' own name, which BlueZ reads as `Device1.Name`:
@@ -351,6 +438,61 @@ promptly with it closed. Seen in the app, not timed.
   the open case: the two pods' devices got 178 and 179 `PropertiesChanged` with `RSSI`
   alone (about 4.5 a second), and no `ManufacturerData` change.
 
+**`Device1.Connect` from the app's banner: AirPods Pro 3, firmware 9A348, adapter hci0,
+BlueZ 5.87, 2026-11-08, 5edd065, `RUST_LOG=cymba=debug` (#195).** Both pods in the ears,
+connected to nothing; the lid was not reported. Times from the press:
+
+| Time | What happened |
+|---|---|
+| 0 | The press: `asking BlueZ to connect` |
+| +3.5 s | BlueZ signaled `Connected` true |
+| +3.7 s | The AAP L2CAP channel up, 160 ms after its connect began |
+| +4.3 s | The app's AAP session up |
+| +4.9 s | `Device1.Connect` replied: `BlueZ connected` |
+
+**`Device1.Connect` to pods an iPhone held: the same pair, adapter, BlueZ and code,
+2026-11-08, `RUST_LOG=cymba=debug` (#195).** The pods were connected to an iPhone that
+played nothing, both in the ears; the lid was not reported. The pods played their connect
+sound; the iPhone showed nothing, and did not try to take them back. Times from the
+press:
+
+| Time | What happened |
+|---|---|
+| 0 | The press: `asking BlueZ to connect` |
+| +4.6 s | BlueZ signaled `Connected` true |
+| +4.9 s | The AAP L2CAP channel up, after 202 ms pending ([l2cap.md](l2cap.md#connecting)) |
+| +5.4 s | The app's AAP session up |
+| +5.9 s | `Device1.Connect` replied: `BlueZ connected` |
+
+No error and no toast; no disconnect was logged for about 24 s after the reply.
+
+**`Device1.Connect` to pods an iPhone played to: the same pair, adapter, BlueZ and code,
+2026-11-08, `RUST_LOG=cymba=debug` (#195).** The iPhone was playing music to the pods,
+both in the ears; the lid was not reported. The music stopped on the iPhone and did not
+move to its speaker; the pods played their connect sound; the iPhone did not take them
+back. Times from the press:
+
+| Time | What happened |
+|---|---|
+| 0 | The press: `asking BlueZ to connect` |
+| +3.5 s | BlueZ signaled `Connected` true |
+| +3.9 s | The AAP L2CAP channel up, 370 ms after its connect began, never pending |
+| +4.5 s | The app's AAP session up |
+| +5.1 s | `Device1.Connect` replied: `BlueZ connected` |
+
+No error and no toast; no disconnect was logged in the 7 s the log runs after the reply.
+
+**`Device1.Connect` to pods in the closed case: the same pair, adapter, BlueZ and code,
+2026-11-08, `RUST_LOG=cymba=debug` (#195).** Both pods in the case, the lid closed. The
+app logged no advertisement from the pair throughout. Times from the press:
+
+| Time | What happened |
+|---|---|
+| 0 | The press: `asking BlueZ to connect` |
+| +30.0 s | No reply had come; the app stopped waiting at its 30 s limit: `failed to connect ...: no answer to the connect within 30s` |
+
+The window showed the toast at about 30 s, and the banner stayed.
+
 **Adapters and restarts: one USB adapter, BlueZ 5.87, a Pro 3 and a Pro 2 (USB-C) both
 connected over AAP, 2026-10-26, abc0e13, `RUST_LOG=linuxpods=debug` (PR #121).**
 
@@ -373,6 +515,23 @@ reproduced twice.** Times as in #123's capture; the kill came about 2.2 s in.
 
 ## Open questions
 
+- `Device1.Connect` to a pair ([Device1.Connect](#device1connect)), each with the time
+  the call takes, from `busctl --system call org.bluez <device path> org.bluez.Device1
+  Connect` or the Connect on the app's banner with `RUST_LOG=cymba=info`:
+  - with the pods connected to another kind of host (an Android phone, another
+    computer): whether a page takes them, and what that host does;
+  - with the pods in the closed case: what bluetoothd replies in the end, and when - none
+    came within 30 s ([Runs](#runs)); whether it goes on paging once the caller has left
+    the bus, so that a second `Connect` then gets `InProgress`; and whether opening the
+    lid while it pages lets the connect succeed;
+  - with the pods out of range: the error, and how long it takes;
+  - with the pods idle in the open case, connected to nothing: how long until the reply;
+  - how long a page timeout takes.
+- Does bluetoothd's object for a pair's real MAC know LE (`PreferredBearer` present on
+  `Device1` with bluetoothd's experimental interfaces on, or `LE` in
+  `SupportedTechnologies` in `/var/lib/bluetooth/<adapter>/<mac>/info`)? Then `Connect`
+  may make an LE connect, and an LE attempt and its error may replace
+  `br-connection-page-timeout` ([Device1.Connect](#device1connect)).
 - Do the pods answer a set of `Volume` with another volume than the one set, by how
   much, and how long do they take? No run of its own: the app's debug log (`RUST_LOG=cymba::volume=debug`) of a
   stretch of speech shows each volume set beside what the transport read then, and

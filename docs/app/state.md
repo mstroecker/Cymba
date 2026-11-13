@@ -27,9 +27,25 @@ GNOME Settings battery was withdrawn and exported again on every reconnect.
 | Levels, charging | The link's reading once it has one, else the cached advertisement |
 | In-ear | The link's ear state once it has both packets, else the cached advertisement: [in-ear.md](in-ear.md) |
 | Lid, connection state | The cached advertisement: AAP carries neither, as far as is known |
+| A pod out of the case | The cached advertisement, for a BLE reading alone: none over AAP, nor for a restored reading ([nearby.md](nearby.md#what-is-notified)) |
+| The host bytes 4-6 name ([protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#decrypted-format)) | The cached advertisement, for a BLE reading alone, as a pod out of the case ([nearby.md](nearby.md#when-the-pods-say-they-will-not-come)) |
 | Model, color | The identity the link holds, taken from the cached advertisement as the link comes up and refreshed by every one after, so it outlives the cache entry |
 | Noise mode, Conversation Awareness, speech level, the pods' name | The link alone: [noise-control.md](noise-control.md), [conversation-awareness.md](conversation-awareness.md), [names.md](names.md) |
 | Firmware version | `Inner::firmware_versions`, kept for the run: [firmware.md](firmware.md) |
+
+Beside the pairs' states, a snapshot says which pairs are on AAP, BlueZ's names, this
+computer's adapters' addresses ([nearby.md](nearby.md#when-the-pods-say-they-will-not-come)), and
+which pairs attachment has [attached](aap-links.md#which-pairs), linked or not. The window offers to connect only a pair
+that is neither ([ui.md](ui.md#the-connect-banner)).
+
+**The attached set is attachment's, replaced whole.** Only attachment reads BlueZ's
+connection state, and it tells the coordinator its set after every attach and detach
+(`Coordinator::set_attached`), as it tells BlueZ's names (`set_device_names`); each is
+broadcast under `inner`'s write lock. When attachment stops, its supervisors and their
+links go with it, and the set it told would stand for pairs nothing holds: so it is
+emptied then, and the attachment that starts over tells its own. The adapters'
+addresses are attachment's the same way (`set_adapter_addresses`): told after every
+change to the adapters, and unknown once it stops.
 
 **No primary pod.** Each pod advertises as itself and calls itself primary
 ([protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#which-pod-sent-it)),
@@ -49,7 +65,7 @@ a reconnect (1fa1632), though it may have been changed from a phone meanwhile.
 consumer sees.
 
 - **No consumer competes for a snapshot.** The window, the tray, attachment and the
-  notifier each see the same latest one.
+  notifiers each see the same latest one.
 - **A slow consumer skips** the snapshots it missed instead of queueing them. Queues per
   consumer, unbounded, grew without limit under an advertisement flood.
 - **Sending never waits for a consumer** to take the snapshot, so a slow one stalls no
@@ -67,6 +83,12 @@ while the write guard is live, never a snapshot built earlier. Sent after the gu
 dropped, an update in between could send a newer snapshot first, and the older one landed
 last and stayed on show. `send_replace` never awaits, so holding `inner` across it is
 safe. Every change to `Inner` that changes what a snapshot shows broadcasts.
+
+**An advertisement of a pair whose link has a reading broadcasts only what it changes.**
+`supersedes_ble` holds, so the reading on show is the link's: the advertisement is
+cached, and broadcast only when it tells the link the pair's model, changes what the
+snapshot takes from the advertisement ([What a snapshot shows](#what-a-snapshot-shows)),
+or comes with a prune.
 
 The window draws at most once per `RENDER_INTERVAL`: [ui.md](ui.md#updates-come-from-snapshots).
 
@@ -109,9 +131,9 @@ BLE is cached, AAP never is, but for the firmware version.
 
 The cache's ages are on the wall clock (`SystemTime`, `podstate::age`), never `Instant`.
 
-- `Instant` is `CLOCK_MONOTONIC`, which stands still while the machine sleeps. A reading
-  from before a night's suspend read "30 min ago" the next morning, and expired hours
-  late.
+- `Instant` is `CLOCK_MONOTONIC`, which does not count a suspend
+  ([protocol/linux/clocks.md](../protocol/linux/clocks.md)). A reading from before a
+  night's suspend read "30 min ago" the next morning, and expired hours late.
 - A time kept across a relaunch has to mean something to the next run.
 - **A reading heard after now** - the clock set back - has no age. It goes at the next
   prune and on load, and is never fresh for a notification.
@@ -124,7 +146,8 @@ How the pods report the lid, and which pod's advertisement carries it:
 [protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#byte-6-lid-state).
 
 The parser reads the lid from byte 6 bit 3 only while status bit 6 or bit 2 puts a pod
-in the case, and reports no lid otherwise. It does not read byte 6's high nibble.
+in the case, and reports no lid otherwise. Bit 2 has an exception that is open
+([protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#open-questions)). It does not read byte 6's high nibble.
 
 **Both pods advertise, so one advertisement never wholly replaces the lid.** Replaced
 wholesale, the lid blinked between open and unknown several times a second with one pod
@@ -136,11 +159,12 @@ worn.
 | Reports none, status bit 4 set | The cached lid is kept |
 | Reports none, status bit 4 clear | No lid |
 
-The parser reports bit 4 as `one_in_case` and stays stateless;
-`Coordinator::handle_advertisement` does the keeping. Which pods set bit 4:
+The parser reports bit 4 as `pod_in_open_case` and stays stateless;
+`Coordinator::handle_advertisement` does the keeping. Which pods set bit 4, and when it
+is clear with a pod in the case:
 [protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#byte-3-status-byte).
-Bit 4 can be clear with a pod in the case (same link), and such an advertisement clears
-a closed lid ([Hardware checks](#hardware-checks)).
+One such case is a worn pod whose partner is in the closed case: its advertisement
+clears a closed lid ([Hardware checks](#hardware-checks)).
 
 A closed lid stays on show while the app runs, until the pods advertise again, for up to
 `BLE_CACHE_TTL`. A relaunch does not keep it: [readings.md](readings.md#what-is-kept).

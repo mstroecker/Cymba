@@ -1,6 +1,7 @@
 //! BlueZ integration: its adapters, read by [`adapters`] and followed by
 //! [`watch_adapters`], its device objects, read and watched by [`Devices`],
-//! and the batteries [`BatteryProvider`] exports to it for GNOME Settings.
+//! the batteries [`BatteryProvider`] exports to it for GNOME Settings, and
+//! a connect to a paired pair ([`connect_device`], [`device_to_connect`]).
 //! All go over a connection they are given - the system bus, or under the
 //! test harness a fake BlueZ on a private one (#72).
 //!
@@ -10,7 +11,7 @@
 //! a battery object is added and removed. A new percentage's
 //! PropertiesChanged is emitted by `BatteryProvider::update_percentage`.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Poll, ready};
 use std::time::Duration;
@@ -309,6 +310,8 @@ pub struct Adapter {
     /// `BatteryProviderManager1` are.
     pub path: String,
     pub powered: bool,
+    /// Its `Address`, `None` when absent or not an address.
+    pub address: Option<Address>,
 }
 
 /// Every adapter of whichever BlueZ answers on `conn`, powered or not, by
@@ -329,6 +332,7 @@ fn adapters_in(objects: ManagedObjects) -> Vec<Adapter> {
             Some(Adapter {
                 path: path.to_string(),
                 powered: bool_prop(props, "Powered"),
+                address: address_prop(props),
             })
         })
         .collect();
@@ -386,6 +390,9 @@ pub struct AdapterState {
     /// while this is unchanged. It changes each time the adapter powers on,
     /// as powering off ended it, and with `registration`.
     pub discovery: Option<u64>,
+    /// Its address, as read with the adapter or announced with it: `None`
+    /// when that had none that reads as an address.
+    pub address: Option<Address>,
 }
 
 impl AdapterSet {
@@ -403,6 +410,17 @@ impl AdapterSet {
 
     pub fn is_empty(&self) -> bool {
         self.adapters.is_empty()
+    }
+
+    /// Every adapter's address, powered or not: this computer's, as far as
+    /// BlueZ tells. `None` while BlueZ is not on the bus, or when an
+    /// adapter's address is not known, as the one missing could be any.
+    pub fn addresses(&self) -> Option<BTreeSet<Address>> {
+        self.owner.as_ref()?;
+        self.adapters
+            .values()
+            .map(|adapter| adapter.address)
+            .collect()
     }
 
     /// Whether BlueZ is on the bus, as far as the watch knows: once it has
@@ -453,6 +471,7 @@ impl AdapterSet {
                             Some(token) if !change.is_some_and(|c| c.off) => token,
                             _ => tokens.next(),
                         }),
+                    address: adapter.address,
                 };
                 (adapter.path, state)
             })
@@ -495,9 +514,16 @@ impl AdapterSet {
                 Some(token) if !change.off => token,
                 _ => tokens.next(),
             });
+            // Announced in between, the address is the announcement's.
+            let address = if change.added {
+                change.address
+            } else {
+                before.and_then(|b| b.address)
+            };
             let state = AdapterState {
                 registration,
                 discovery,
+                address,
             };
             self.adapters.insert(path, state);
         }
@@ -663,9 +689,10 @@ enum AdapterSignal {
 /// What happened to one adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AdapterEvent {
-    /// It appeared, powered or not.
+    /// It appeared, powered or not, with its address if it has one.
     Added {
         powered: bool,
+        address: Option<Address>,
     },
     Powered(bool),
     Removed,
@@ -721,7 +748,11 @@ fn adapter_signal(msg: &Message) -> Option<AdapterSignal> {
                 .ok()?;
             let props = interfaces.get(ADAPTER_INTERFACE)?;
             let powered = bool_prop(props, "Powered");
-            Some(adapter(path.as_str(), AdapterEvent::Added { powered }))
+            let address = address_prop(props);
+            Some(adapter(
+                path.as_str(),
+                AdapterEvent::Added { powered, address },
+            ))
         }
         ("org.freedesktop.DBus.ObjectManager", "InterfacesRemoved") => {
             let (path, interfaces) = msg
@@ -769,6 +800,8 @@ struct AdapterChange {
     removed: bool,
     /// Whether it was off in between, which ended discovery there.
     off: bool,
+    /// The address the last announcement in between gave it.
+    address: Option<Address>,
 }
 
 impl Queue for AdapterChanges {
@@ -788,7 +821,7 @@ impl Queue for AdapterChanges {
             } => (sender, path, event),
         };
         let now = match event {
-            AdapterEvent::Added { powered } | AdapterEvent::Powered(powered) => Some(powered),
+            AdapterEvent::Added { powered, .. } | AdapterEvent::Powered(powered) => Some(powered),
             AdapterEvent::Removed => None,
         };
         let change = self
@@ -801,9 +834,13 @@ impl Queue for AdapterChanges {
                 added: false,
                 removed: false,
                 off: false,
+                address: None,
             });
         change.now = now;
-        change.added |= matches!(event, AdapterEvent::Added { .. });
+        if let AdapterEvent::Added { address, .. } = event {
+            change.added = true;
+            change.address = address;
+        }
         change.removed |= now.is_none();
         change.off |= now != Some(true);
     }
@@ -920,9 +957,9 @@ impl Devices {
         match self.read_device_names().await {
             Ok(names) => names,
             Err(e) => {
-                // Names are cosmetic: without them the switcher falls back to the
-                // pods' own name, then the model or the MAC, so this must never
-                // be fatal.
+                // Never fatal: without names the switcher falls back to the
+                // pods' own name, then the model or the MAC, and the window
+                // offers no Connect until they are read again.
                 tracing::debug!("failed to read device names: {e:#}");
                 HashMap::new()
             }
@@ -1013,9 +1050,10 @@ pub struct DeviceInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionEvent {
     pub device_path: String,
-    /// `None` when the services changed, not the connection: a first pairing
-    /// connects before service discovery fills in the UUID that marks AirPods, so
-    /// the device is not recognizable yet when `Connected` changes.
+    /// `None` when the services changed, not the connection. The app assumes,
+    /// unchecked, that a first pairing connects before service discovery
+    /// fills in the UUID that marks AirPods, so the device is not
+    /// recognizable yet when `Connected` changes.
     pub connected: Option<bool>,
 }
 
@@ -1187,7 +1225,8 @@ pub(crate) fn coalesce<Q: Queue>() -> (Pusher<Q>, impl Stream<Item = Q::Out> + u
 /// A services change carries nothing attachment keeps: it reads `Connected`
 /// and `UUIDs` back from BlueZ. So one pending per device loses nothing.
 /// Dropping changes once there were many instead could drop the one that
-/// attaches a pair after its first pairing.
+/// would attach a pair after its first pairing, if its services come after
+/// `Connected`, as the app assumes - see [`ConnectionEvent::connected`].
 ///
 /// `Connected` changes come out first, then services changes, each in the
 /// order it came. For one device the order makes no difference, as a services
@@ -1268,6 +1307,14 @@ fn bool_prop(props: &HashMap<String, OwnedValue>, key: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The `Address` among `props`, `None` when absent or not an address.
+fn address_prop(props: &HashMap<String, OwnedValue>) -> Option<Address> {
+    String::try_from(props.get("Address")?.clone())
+        .ok()?
+        .parse()
+        .ok()
+}
+
 /// A paired device's names in BlueZ.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceNames {
@@ -1319,6 +1366,97 @@ fn device_name_entry(props: &HashMap<String, OwnedValue>) -> Option<(Address, De
             None
         }
     }
+}
+
+/// The longest a connect waits for BlueZ: the bound `ui::connect` puts on
+/// the bus connection and [`connect_device`] together, a guess at a page
+/// timeout, or a page and the profiles BlueZ connects after it
+/// (`docs/app/bluez.md#connecting-a-pair`). Past it the app stops waiting;
+/// what bluetoothd does then: `docs/protocol/linux/bluez.md#device1connect`.
+pub const DEVICE_CONNECT_LIMIT: Duration = Duration::from_secs(30);
+
+/// Asks the bluetoothd on `conn` to connect the paired AirPods at `mac`:
+/// `Device1.Connect`, which pages it
+/// (`docs/protocol/linux/bluez.md#device1connect`). Back once BlueZ has
+/// answered; the caller bounds it, with [`DEVICE_CONNECT_LIMIT`].
+///
+/// A deliberate page, to be called only through `app.connect`, never on
+/// the app's own event. bluetoothd is never started: every call goes, without
+/// auto-start, to the unique name that owns `org.bluez` now, and the
+/// device is found in what that bluetoothd reports, under the adapter it
+/// names for it - see [`device_to_connect`].
+pub async fn connect_device(conn: &Connection, mac: Address) -> Result<()> {
+    let owner = zbus::fdo::DBusProxy::new(conn)
+        .await?
+        .get_name_owner(BLUEZ_SERVICE.try_into()?)
+        .await
+        .context("BlueZ is not on the bus")?;
+    let manager = zbus::fdo::ObjectManagerProxy::builder(conn)
+        .destination(owner.clone())?
+        .path("/")?
+        .cache_properties(proxy::CacheProperties::No)
+        .build()
+        .await?;
+    let objects: Option<ManagedObjects> = manager
+        .inner()
+        .call_with_flags(
+            "GetManagedObjects",
+            proxy::MethodFlags::NoAutoStart.into(),
+            &(),
+        )
+        .await
+        .context("failed to read BlueZ's objects")?;
+    let objects = objects.context("BlueZ sent no reply")?;
+    let path = device_to_connect(&objects, mac)?;
+    let device: zbus::Proxy = proxy::Builder::new(conn)
+        .destination(owner)?
+        .path(path.clone())?
+        .interface("org.bluez.Device1")?
+        .cache_properties(proxy::CacheProperties::No)
+        .build()
+        .await?;
+    let _: Option<()> = device
+        .call_with_flags("Connect", proxy::MethodFlags::NoAutoStart.into(), &())
+        .await
+        .with_context(|| format!("BlueZ did not connect {path}"))?;
+    Ok(())
+}
+
+/// The object to connect `mac` at, among `objects`, BlueZ's: a paired
+/// `Device1` with that `Address` that lists the AirPods service - see
+/// [`is_airpods`] - under an adapter that is there and powered. A pair
+/// paired with several adapters is connected through the first powered one,
+/// by path. Fails when there is none: BlueZ does not have the pair paired,
+/// it is no AirPods, or its adapter is off.
+pub fn device_to_connect(objects: &ManagedObjects, mac: Address) -> Result<OwnedObjectPath> {
+    let paired: Vec<(&OwnedObjectPath, &HashMap<String, OwnedValue>)> = objects
+        .iter()
+        .filter_map(|(path, interfaces)| {
+            let device = interfaces.get("org.bluez.Device1")?;
+            let address: Address = String::try_from(device.get("Address")?.clone())
+                .ok()?
+                .parse()
+                .ok()?;
+            (address == mac && bool_prop(device, "Paired") && is_airpods(device))
+                .then_some((path, device))
+        })
+        .collect();
+    anyhow::ensure!(!paired.is_empty(), "BlueZ has no paired AirPods at {mac}");
+    let powered = |device: &HashMap<String, OwnedValue>| {
+        device
+            .get("Adapter")
+            .and_then(|adapter| OwnedObjectPath::try_from(adapter.clone()).ok())
+            .and_then(|adapter| objects.get(&adapter))
+            .and_then(|interfaces| interfaces.get(ADAPTER_INTERFACE))
+            .is_some_and(|adapter| bool_prop(adapter, "Powered"))
+    };
+    paired
+        .into_iter()
+        .filter(|(_, device)| powered(device))
+        .map(|(path, _)| path)
+        .min_by(|a, b| a.as_str().cmp(b.as_str()))
+        .cloned()
+        .with_context(|| format!("no powered adapter has {mac} paired"))
 }
 
 #[cfg(test)]
@@ -1469,7 +1607,8 @@ mod tests {
     }
 
     /// Every object with `Adapter1` is an adapter, whatever it is called, and
-    /// nothing else is: not a device, nor the root object.
+    /// nothing else is: not a device, nor the root object. Each has its
+    /// `Address`, or none where that is missing or not an address.
     #[test]
     fn adapters_are_the_objects_with_adapter1() {
         let powered = |on: bool| device([("Powered", Value::from(on))]);
@@ -1489,22 +1628,115 @@ mod tests {
                     device([("Connected", Value::from(true))]),
                 )],
             ),
-            ("/org/bluez/hci0", vec![(ADAPTER_INTERFACE, powered(false))]),
-            ("/org/bluez/hci2", vec![(ADAPTER_INTERFACE, device([]))]),
+            (
+                "/org/bluez/hci0",
+                vec![(
+                    ADAPTER_INTERFACE,
+                    device([
+                        ("Powered", Value::from(false)),
+                        ("Address", Value::from("00:00:5E:00:53:F0")),
+                    ]),
+                )],
+            ),
+            (
+                "/org/bluez/hci2",
+                vec![(
+                    ADAPTER_INTERFACE,
+                    device([("Address", Value::from("not-an-address"))]),
+                )],
+            ),
         ]);
-        let adapter = |path: &str, powered| Adapter {
+        let adapter = |path: &str, powered, address| Adapter {
             path: path.to_string(),
             powered,
+            address,
         };
+        let hci0 = Address::new([0x00, 0x00, 0x5E, 0x00, 0x53, 0xF0]);
         assert_eq!(
             adapters_in(objects),
             [
-                adapter("/org/bluez/hci0", false),
-                adapter("/org/bluez/hci1", true),
-                adapter("/org/bluez/hci2", false),
+                adapter("/org/bluez/hci0", false, Some(hci0)),
+                adapter("/org/bluez/hci1", true, None),
+                adapter("/org/bluez/hci2", false, None),
             ]
         );
         assert!(adapters_in(ManagedObjects::new()).is_empty());
+    }
+
+    /// The connect goes to the pair's paired device on a powered adapter:
+    /// for a pair paired with two, the one whose adapter is on, the first by
+    /// path when both are; never to a device of the same address that is not
+    /// paired, nor to another pair's. With its adapters off, or no paired
+    /// device, there is nothing to connect, and a paired device that does not
+    /// list the AirPods service - a keyboard - is never connected.
+    #[test]
+    fn a_connect_goes_to_the_paired_device_on_a_powered_adapter() {
+        let pair = "AA:BB:CC:DD:EE:FF";
+        let other = "AA:BB:CC:DD:EE:00";
+        let keyboard = "AA:BB:CC:DD:EE:11";
+        const HID: &str = "00001124-0000-1000-8000-00805f9b34fb";
+        let adapter = |on: bool| vec![(ADAPTER_INTERFACE, device([("Powered", Value::from(on))]))];
+        let paired_on = |address: &str, adapter: &str, paired: bool| {
+            let service = if address == keyboard {
+                HID
+            } else {
+                AIRPODS_UUID
+            };
+            vec![(
+                "org.bluez.Device1",
+                device([
+                    uuids(&[AUDIO_SINK, service]),
+                    ("Address", Value::from(address.to_string())),
+                    (
+                        "Adapter",
+                        Value::from(ObjectPath::try_from(adapter.to_string()).unwrap()),
+                    ),
+                    ("Paired", Value::from(paired)),
+                ]),
+            )]
+        };
+        let world = |hci0_on: bool, hci1_on: bool| {
+            managed([
+                ("/org/bluez/hci0", adapter(hci0_on)),
+                ("/org/bluez/hci1", adapter(hci1_on)),
+                ("/org/bluez/hci2", adapter(true)),
+                (
+                    "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF",
+                    paired_on(pair, "/org/bluez/hci0", true),
+                ),
+                (
+                    "/org/bluez/hci1/dev_AA_BB_CC_DD_EE_FF",
+                    paired_on(pair, "/org/bluez/hci1", true),
+                ),
+                (
+                    "/org/bluez/hci2/dev_AA_BB_CC_DD_EE_FF",
+                    paired_on(pair, "/org/bluez/hci2", false),
+                ),
+                (
+                    "/org/bluez/hci2/dev_AA_BB_CC_DD_EE_00",
+                    paired_on(other, "/org/bluez/hci2", true),
+                ),
+                (
+                    "/org/bluez/hci2/dev_AA_BB_CC_DD_EE_11",
+                    paired_on(keyboard, "/org/bluez/hci2", true),
+                ),
+            ])
+        };
+        let to = |objects: &ManagedObjects| {
+            device_to_connect(objects, pair.parse().unwrap()).map(|path| path.to_string())
+        };
+        let hci0 = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF";
+        let hci1 = "/org/bluez/hci1/dev_AA_BB_CC_DD_EE_FF";
+        assert_eq!(to(&world(true, false)).unwrap(), hci0);
+        assert_eq!(to(&world(false, true)).unwrap(), hci1);
+        assert_eq!(to(&world(true, true)).unwrap(), hci0);
+        assert!(
+            to(&world(false, false)).is_err(),
+            "connected while hci0 and hci1 are off, through hci2, which has it unpaired"
+        );
+        assert!(to(&ManagedObjects::new()).is_err());
+        let objects = world(true, true);
+        assert!(device_to_connect(&objects, keyboard.parse().unwrap()).is_err());
     }
 
     const MAC_A: Address = Address::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
@@ -1663,7 +1895,14 @@ mod tests {
     }
 
     fn added(path: &str, powered: bool) -> AdapterSignal {
-        signal(OLD, path, AdapterEvent::Added { powered })
+        signal(
+            OLD,
+            path,
+            AdapterEvent::Added {
+                powered,
+                address: None,
+            },
+        )
     }
 
     fn powered(path: &str, powered: bool) -> AdapterSignal {
@@ -1696,6 +1935,7 @@ mod tests {
             .map(|&(path, powered)| Adapter {
                 path: path.to_string(),
                 powered,
+                address: None,
             })
             .collect()
     }
@@ -1725,6 +1965,7 @@ mod tests {
             added: false,
             removed,
             off,
+            address: None,
         };
         assert_eq!(
             taken.adapters.remove(OLD).unwrap(),
@@ -1739,6 +1980,50 @@ mod tests {
         );
         assert!(changes([]).adapters.is_empty());
         assert!(changes([AdapterSignal::Owner, AdapterSignal::Owner]).owner);
+    }
+
+    /// The set's addresses are its adapters', read or announced, kept while
+    /// an adapter powers off; unknown while BlueZ is off the bus or once an
+    /// adapter has none that reads, and none on the bus with no adapter.
+    #[test]
+    fn the_addresses_are_every_adapters_or_unknown() {
+        let hci0 = Address::new([0x00, 0x00, 0x5E, 0x00, 0x53, 0xF0]);
+        let hci1 = Address::new([0x00, 0x00, 0x5E, 0x00, 0x53, 0xF1]);
+        let announced = |address| {
+            signal(
+                OLD,
+                HCI1,
+                AdapterEvent::Added {
+                    powered: true,
+                    address,
+                },
+            )
+        };
+        let mut tokens = Tokens::default();
+        assert_eq!(AdapterSet::default().addresses(), None);
+
+        let first = Adapter {
+            path: HCI0.to_string(),
+            powered: true,
+            address: Some(hci0),
+        };
+        let set =
+            AdapterSet::default().read(vec![first], OLD.to_string(), BySender::new(), &mut tokens);
+        assert_eq!(set.addresses(), Some(BTreeSet::from([hci0])));
+
+        let mut plugged = set.clone();
+        plugged.apply(by_sender([announced(Some(hci1))]), &mut tokens);
+        plugged.apply(by_sender([powered(HCI1, false)]), &mut tokens);
+        assert_eq!(plugged.addresses(), Some(BTreeSet::from([hci0, hci1])));
+
+        let mut unreadable = set;
+        unreadable.apply(by_sender([announced(None)]), &mut tokens);
+        assert_eq!(unreadable.addresses(), None);
+
+        assert_eq!(
+            read(OLD, &[], &mut tokens).addresses(),
+            Some(BTreeSet::new())
+        );
     }
 
     /// Discovery has to start again on an adapter that was off at any point,
@@ -1840,7 +2125,14 @@ mod tests {
         set.apply(
             by_sender([
                 powered(HCI0, false),
-                signal(":1.66", HCI1, AdapterEvent::Added { powered: true }),
+                signal(
+                    ":1.66",
+                    HCI1,
+                    AdapterEvent::Added {
+                        powered: true,
+                        address: None,
+                    },
+                ),
             ]),
             &mut tokens,
         );
@@ -1857,7 +2149,13 @@ mod tests {
 
         // An announced one comes in, from the bluetoothd read from.
         set.apply(
-            by_sender([from_new(HCI1, AdapterEvent::Added { powered: true })]),
+            by_sender([from_new(
+                HCI1,
+                AdapterEvent::Added {
+                    powered: true,
+                    address: None,
+                },
+            )]),
             &mut tokens,
         );
         assert!(set.get(HCI1).is_some());

@@ -30,7 +30,9 @@ that someone building another client can use it without reading our code.
   noise control, the `0x09` settings, Conversation Awareness, device information, rename
 - `ble/` - Apple's proximity pairing advertisements, and the addresses they come from
 - `linux/` - the kernel's L2CAP and LE scanning, bluetoothd, zbus, and the desktop around
-  them (MPRIS, PipeWire, UPower): what they do that a client has to know
+  them (MPRIS, PipeWire, UPower, GApplication, GNOME Shell's notifications, logind,
+  Flatpak's bus proxy), and the clocks across a suspend: what they do that a client has
+  to know
 
 Names from our code - types, constants, functions - stay out of these documents, but
 for one line at the top pointing at the parser and at the `app/` document that uses

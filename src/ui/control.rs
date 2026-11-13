@@ -1,6 +1,6 @@
 //! The Control page: battery display, status text, device switcher, Noise
 //! Control, Features, and Info with the pods' name, model, color and firmware
-//! version.
+//! version; and the connect banner above it, with the header's spinner.
 
 use std::cell::{Cell, RefCell};
 
@@ -81,11 +81,21 @@ pub(super) const BATTERY_IMAGES: [&str; 3] = [
     "airpod_case.png",
 ];
 
-/// Everything on the Control page the update loop needs to touch.
+/// Everything in the window the update loop needs to touch: the Control
+/// page, the switcher and the spinner in the header bar, and the banner under
+/// it.
 pub struct ControlView {
     /// The window's content: the Control page as `device`, or the empty state
     /// as `empty` while `Snapshot::devices` is empty.
     pub content: gtk::Stack,
+    /// Placed under the header bar by `setup_ui`. Its button asks BlueZ to
+    /// connect the pair shown, through `app.connect` - see
+    /// `window::activate`. Revealed only while [`offers_connect`], by
+    /// [`render_device`]; its title and button as [`connect_shown`] has them.
+    pub connect_banner: adw::Banner,
+    /// At the start of the header bar, spinning while a connect to the pair
+    /// shown is under way - see [`connect_shown`]; hidden otherwise.
+    pub connecting_spinner: gtk::Spinner,
     pub battery: BatteryWidgets,
     /// The device switcher, in the header bar in place of the title; hidden
     /// unless `Snapshot::devices` has more than one.
@@ -381,8 +391,24 @@ pub(super) fn create_control_view() -> ControlView {
     content.add_named(&page, Some("device"));
     content.add_named(&create_empty_state(), Some("empty"));
 
+    // Revealed and hidden by the snapshot alone, never by its own press: the
+    // pair connecting is what takes it away.
+    let shown = connect_shown(false, false, false);
+    let connect_banner = adw::Banner::builder()
+        .name("connect")
+        .title(shown.title)
+        .button_label(shown.button)
+        .build();
+    let connecting_spinner = gtk::Spinner::builder()
+        .name("connecting")
+        .tooltip_text("Connecting")
+        .visible(false)
+        .build();
+
     ControlView {
         content,
+        connect_banner,
+        connecting_spinner,
         battery: widgets,
         device_dropdown,
         device_list,
@@ -499,6 +525,91 @@ fn shown_name(snapshot: &Snapshot, mac: Address) -> Option<String> {
         .or_else(|| snapshot.device_name(mac).map(str::to_string))
 }
 
+/// Whether the window offers to connect `mac`: BlueZ has it paired, and it
+/// is neither attached - see [`Snapshot::attached`] - nor on AAP - see
+/// docs/app/ui.md#the-connect-banner.
+pub(super) fn offers_connect(snapshot: &Snapshot, mac: Address) -> bool {
+    snapshot.device_names.contains_key(&mac)
+        && !snapshot.is_attached(mac)
+        && !snapshot.is_connected(mac)
+}
+
+/// Whether the last live advertisement of `mac` says both pods are in the
+/// case: [`PodState::out_of_case`], so never from a restored reading or AAP -
+/// see docs/app/ui.md#the-connect-banner.
+pub(super) fn in_the_case(snapshot: &Snapshot, mac: Address) -> bool {
+    snapshot
+        .states
+        .get(&mac)
+        .is_some_and(|state| state.out_of_case == Some(false))
+}
+
+/// What the connect banner and the header's spinner show for the pair on
+/// show - see docs/app/ui.md#the-connect-banner.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct ConnectShown {
+    /// The banner revealed.
+    pub revealed: bool,
+    pub title: &'static str,
+    /// The button's label; empty hides it.
+    pub button: &'static str,
+    /// Whether the button takes a press.
+    pub pressable: bool,
+    /// The spinner shown and spinning.
+    pub spinning: bool,
+}
+
+/// The connect banner and the spinner, from whether the window offers to
+/// connect the pair shown - [`offers_connect`] - whether a connect to it is
+/// under way, whatever started it, and whether both pods are in the case -
+/// [`in_the_case`]. Revealed from the offer alone; the title, the button and
+/// the spinner from the connect, and with none under way, the button pressable
+/// unless the pods are in the case.
+pub(super) fn connect_shown(offers: bool, connecting: bool, in_case: bool) -> ConnectShown {
+    if connecting {
+        ConnectShown {
+            revealed: offers,
+            title: "Connecting…",
+            button: "",
+            pressable: false,
+            spinning: true,
+        }
+    } else if in_case {
+        ConnectShown {
+            revealed: offers,
+            title: "Your AirPods are in the case",
+            button: "Connect",
+            pressable: false,
+            spinning: false,
+        }
+    } else {
+        ConnectShown {
+            revealed: offers,
+            title: "Your AirPods are not connected",
+            button: "Connect",
+            pressable: true,
+            spinning: false,
+        }
+    }
+}
+
+/// The banner's own button, which libadwaita keeps internal: the one
+/// `gtk::Button` inside it (libadwaita 1.10, `src/adw-banner.ui`).
+fn banner_button(banner: &adw::Banner) -> Option<gtk::Button> {
+    let mut pending = vec![banner.clone().upcast::<gtk::Widget>()];
+    while let Some(widget) = pending.pop() {
+        let mut child = widget.first_child();
+        while let Some(widget) = child {
+            if let Some(button) = widget.downcast_ref::<gtk::Button>() {
+                return Some(button.clone());
+            }
+            child = widget.next_sibling();
+            pending.push(widget);
+        }
+    }
+    None
+}
+
 /// What an Info row shows while its value is not known.
 const UNKNOWN: &str = "Unknown";
 
@@ -532,10 +643,29 @@ fn show_info(row: &adw::ActionRow, label: &gtk::Label, text: &str, known: bool) 
 }
 
 /// Draws one device, and gates noise control, the features and renaming on
-/// how the data arrived.
-pub(super) fn render_device(view: &ControlView, snapshot: &Snapshot, mac: Option<Address>) {
+/// how the data arrived. `connecting` says whether a connect to it is under
+/// way.
+pub(super) fn render_device(
+    view: &ControlView,
+    snapshot: &Snapshot,
+    mac: Option<Address>,
+    connecting: bool,
+) {
     let state = mac.and_then(|m| snapshot.states.get(&m));
     let connected = mac.is_some_and(|m| snapshot.is_connected(m));
+    let shown = connect_shown(
+        mac.is_some_and(|m| offers_connect(snapshot, m)),
+        connecting,
+        mac.is_some_and(|m| in_the_case(snapshot, m)),
+    );
+    view.connect_banner.set_revealed(shown.revealed);
+    view.connect_banner.set_title(shown.title);
+    view.connect_banner.set_button_label(Some(shown.button));
+    if let Some(button) = banner_button(&view.connect_banner) {
+        button.set_sensitive(shown.pressable);
+    }
+    view.connecting_spinner.set_spinning(shown.spinning);
+    view.connecting_spinner.set_visible(shown.spinning);
 
     // Kept from the pair's last link, so shown whether a reading is or not.
     let version = mac.and_then(|m| snapshot.firmware_version(m));
@@ -685,6 +815,7 @@ fn status_text(state: &PodState) -> String {
 mod tests {
     use super::*;
     use crate::bluez::DeviceNames;
+    use std::collections::{HashMap, HashSet};
 
     /// A reading identified by `product_id`, in white.
     fn identified(product_id: u16, source: DataSource) -> PodState {
@@ -956,5 +1087,132 @@ mod tests {
         assert_eq!(choose_device(None, &listing(&[], &[C])), Some(C));
         let snap = listing(&[A], &[B, C]);
         assert_eq!(choose_device(Some(C), &snap), Some(C));
+    }
+
+    /// Connect is offered for a pair BlueZ has paired while it is neither
+    /// attached nor on AAP: not for one BlueZ does not have paired, not once
+    /// it is attached, and not while it is on AAP.
+    #[test]
+    fn connect_is_offered_only_while_neither_attached_nor_on_aap() {
+        let names = DeviceNames {
+            alias: "Kitchen".into(),
+            name: None,
+        };
+        let paired = Snapshot {
+            known_keys: vec![MAC_1],
+            device_names: HashMap::from([(MAC_1, names)]),
+            ..Default::default()
+        };
+        assert!(offers_connect(&paired, MAC_1));
+        assert!(!offers_connect(&paired, MAC_2), "not paired in BlueZ");
+
+        let attached = Snapshot {
+            attached: HashSet::from([MAC_1]),
+            ..paired.clone()
+        };
+        assert!(!offers_connect(&attached, MAC_1));
+        let linked = Snapshot {
+            connected_macs: vec![MAC_1],
+            ..paired.clone()
+        };
+        assert!(!offers_connect(&linked, MAC_1), "on AAP, not attached");
+    }
+
+    /// A connect under way changes the title, hides the button and spins
+    /// the spinner, revealed or not, the pods in the case or not; only the
+    /// offer reveals the banner.
+    #[test]
+    fn a_connect_under_way_shows_in_the_title_button_and_spinner() {
+        let idle = ConnectShown {
+            revealed: true,
+            title: "Your AirPods are not connected",
+            button: "Connect",
+            pressable: true,
+            spinning: false,
+        };
+        assert_eq!(connect_shown(true, false, false), idle);
+        assert_eq!(
+            connect_shown(false, false, false),
+            ConnectShown {
+                revealed: false,
+                ..idle
+            }
+        );
+
+        let connecting = ConnectShown {
+            revealed: true,
+            title: "Connecting…",
+            button: "",
+            pressable: false,
+            spinning: true,
+        };
+        assert_eq!(connect_shown(true, true, false), connecting);
+        assert_eq!(connect_shown(true, true, true), connecting);
+        // Attached, or on AAP, before BlueZ answers the connect: the
+        // connect goes on behind a banner the snapshot has taken away.
+        assert_eq!(
+            connect_shown(false, true, false),
+            ConnectShown {
+                revealed: false,
+                ..connecting
+            }
+        );
+    }
+
+    /// With both pods in the case and no connect under way, the banner says
+    /// so and its Connect takes no press (#204).
+    #[test]
+    fn connect_takes_no_press_with_both_pods_in_the_case() {
+        assert_eq!(
+            connect_shown(true, false, true),
+            ConnectShown {
+                revealed: true,
+                title: "Your AirPods are in the case",
+                button: "Connect",
+                pressable: false,
+                spinning: false,
+            }
+        );
+    }
+
+    /// Both pods are in the case while the last live advertisement has both
+    /// charging, as the Pro 3's `35 a9 b5` on 2026-11-10: not with one pod
+    /// charging alone in the case - the left pod's `24 fa 95`, status bit 2
+    /// set with the right pod worn - nor its worn partner's `13 aa a5`, nor
+    /// both out with `0b aa 8f`; and not from a restored reading or one over
+    /// AAP, whatever their charging.
+    #[test]
+    fn in_the_case_while_a_live_advertisement_has_both_pods_charging() {
+        let of = |state: PodState| Snapshot {
+            states: HashMap::from([(MAC_1, state)]),
+            ..Default::default()
+        };
+        assert!(in_the_case(
+            &of(PodState::advertised(0x35, 0xa9, 0xb5)),
+            MAC_1
+        ));
+        assert!(!in_the_case(
+            &of(PodState::advertised(0x35, 0xa9, 0xb5)),
+            MAC_2
+        ));
+        for (status, battery, charging) in
+            [(0x24, 0xfa, 0x95), (0x13, 0xaa, 0xa5), (0x0b, 0xaa, 0x8f)]
+        {
+            let state = PodState::advertised(status, battery, charging);
+            assert!(
+                !in_the_case(&of(state), MAC_1),
+                "{status:02x} {charging:02x}"
+            );
+        }
+
+        let mut restored = PodState::empty(DataSource::Ble);
+        restored.restored = true;
+        restored.left_charging = true;
+        restored.right_charging = true;
+        assert!(!in_the_case(&of(restored), MAC_1));
+        let mut aap = PodState::empty(DataSource::Aap);
+        aap.left_charging = true;
+        aap.right_charging = true;
+        assert!(!in_the_case(&of(aap), MAC_1));
     }
 }

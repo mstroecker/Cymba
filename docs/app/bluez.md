@@ -2,7 +2,8 @@
 
 How Cymba works with bluetoothd over D-Bus: finding the adapters and following them,
 listening for the pods - an advertisement monitor, or discovery - the battery providers,
-the subscriptions that advertisements reach, and which signals and calls it believes. The code is in `bluez`, `ble::scanner` and `attachment`. What
+connecting a pair, the subscriptions that advertisements reach, and which signals and
+calls it believes. The code is in `bluez`, `ble::scanner`, `attachment` and, for a connect, `ui::connect`. What
 bluetoothd and zbus do, with their sources:
 [protocol/linux/bluez.md](../protocol/linux/bluez.md),
 [protocol/linux/zbus.md](../protocol/linux/zbus.md).
@@ -27,6 +28,13 @@ the first restart, with nothing in the log (#50).
 So `watch_adapters` turns what it hears into `AdapterSet` tokens, each tied to the
 bluetoothd instance it was read from. A consumer starts again when the token changes,
 never on a single signal.
+
+**Each adapter's `Address` comes with it,** from the same `GetManagedObjects` reply and
+`InterfacesAdded` signal, with no call of its own: this computer's addresses for the
+nearby notification ([nearby.md](nearby.md#when-the-pods-say-they-will-not-come)).
+`AdapterSet::addresses` has them while BlueZ is on the bus and every adapter's address
+reads. An address is read only there: a `PropertiesChanged` of an adapter's `Address`
+is not followed, and the address it had stands until the adapters are read again.
 
 ## Listening for the pods
 
@@ -180,6 +188,44 @@ How GNOME Settings shows a pair's battery: [battery.md](battery.md#gnome-setting
 After every change to the adapters, attachment sweeps the attached pairs again against
 what BlueZ reports connected.
 
+## Connecting a pair
+
+`bluez::connect_device` asks bluetoothd to connect a paired pair: `Device1.Connect`, which
+pages it ([protocol/linux/bluez.md](../protocol/linux/bluez.md#device1connect)). What the
+window shows of it: [ui.md](ui.md#the-connect-banner).
+
+- **A deliberate page, only through `app.connect`** (#195): the window's banner, or
+  anything else that runs it; never the app's own event, signal or timer. A page brings back a pair
+  the user disconnected ([aap-links.md](aap-links.md#which-pairs)), and may take the
+  pods from another host, as far as tried:
+  [protocol/linux/bluez.md](../protocol/linux/bluez.md#a-pair-another-host-holds).
+  Auto-connect (#194) is not built.
+- **Not an AAP command.** `Coordinator::command` needs a link, and there is none yet
+  ([commands.md](commands.md#one-path)). AAP follows as for any connect: attachment
+  attaches the pair once BlueZ reports it connected.
+- **The device is found, never assumed.** It is read from the `GetManagedObjects` of the
+  bluetoothd that owns `org.bluez` now: a paired `Device1` with the pair's `Address`
+  that lists the AirPods service (`bluez::is_airpods`), under the adapter its `Adapter`
+  names, which is there and powered. A pair paired with several adapters is connected
+  through the first powered one, by path. With none, the connect fails without calling
+  `Connect`. The AirPods service keeps `app.connect`, which any process on the session
+  bus can run through `org.gtk.Actions`
+  ([protocol/linux/desktop.md](../protocol/linux/desktop.md#gapplication)), from paging a
+  keyboard or any other device.
+- **Never starts bluetoothd.** `GetNameOwner` first; then every call goes to that unique
+  name, with `NoAutoStart` ([Never starting bluetoothd](#never-starting-bluetoothd)).
+  With BlueZ off the bus, the connect fails at once.
+- **Bounded by `bluez::DEVICE_CONNECT_LIMIT`,** the bus connection and the call together,
+  in `ui::connect`: a guess at a page timeout, or a page and the profiles BlueZ connects
+  after it. Connects to a Pro 3 ran well inside it; to pods in the closed case
+  bluetoothd gave no reply within it, and the limit ended the connect
+  ([protocol/linux/bluez.md](../protocol/linux/bluez.md#device1connect)). A page timeout
+  is not timed ([protocol/linux/bluez.md](../protocol/linux/bluez.md#open-questions)).
+  Past it the app says the connect failed and drops the connect's own bus connection;
+  what bluetoothd then goes on with, and what it cancels:
+  [protocol/linux/bluez.md](../protocol/linux/bluez.md#device1connect). A pair that
+  connects after that is attached as any.
+
 ## Connections that serve objects
 
 **Built with one served already** (`connection::Builder::serve_at`), never plain (#125).
@@ -278,16 +324,18 @@ connection handling:
 | On the bus | Makes no call for an event BlueZ did not confirm |
 
 So no unconfirmed event starts bluetoothd. The volume and the media pause call without
-auto-start too ([volume.md](volume.md), [media-pause.md](media-pause.md)). The calls the
+auto-start too ([volume.md](volume.md), [media-pause.md](media-pause.md)), and a connect
+goes to the unique name that owns `org.bluez` ([Connecting a pair](#connecting-a-pair)). The calls the
 scanner makes for an adapter go to the unique name its adapters were read from, which
 nothing starts ([Listening for the pods](#listening-for-the-pods)).
 
 ## Tasks that never give up
 
-The tasks on the system bus, `ble_task` and `attachment::run`, never return for good
-(#50). They set themselves up again after `bluez::Backoff`, which counts a run shorter than
+The tasks on the system bus, `ble_task`, `attachment::run` and `presence::run`, never
+return for good (#50). They set themselves up again after `bluez::Backoff`, which counts a run shorter than
 `bluez::RETRY_MAX` as a failure, so a connection that dies at once is not retried in a
-loop. Each used to give up at its first error, and the app stayed deaf until restarted.
+loop. `ble_task` and `attachment::run` each used to give up at its first error, and the
+app stayed deaf until restarted.
 
 `volume::Volume` and `media::Media` have no such loop: they connect when a call needs it,
 and again after a connection failed.
@@ -330,6 +378,50 @@ and without:
   monitor is registered again under the new bluetoothd, with `Discovering` false at the
   end. With Preferences open, whether the scanning hint shows for that moment, and for
   how long ([ui.md](ui.md#the-scanning-hint)).
+
+A connect from the window's connect banner has run on a pair with both pods in the ears -
+connected to nothing, held by an idle iPhone, and by one playing to them - and with both
+in the closed case, where it failed at `bluez::DEVICE_CONNECT_LIMIT` with the toast
+([protocol/linux/bluez.md](../protocol/linux/bluez.md#runs)). The cases below are still
+to try, with `RUST_LOG=cymba=info`, on a pair that is paired and not connected here. The
+banner's Connect is insensitive while both pods charge in the case
+([ui.md](ui.md#the-connect-banner)), so the cases in the case start the connect from
+outside, with `gdbus` and `org.gtk.Actions.Activate connect`:
+
+- In the open case, idle, connected to nothing: `asking BlueZ to connect`, then `BlueZ
+  connected` and `AirPods connected`, in either order, and the banner gone. How long
+  from the first to `BlueZ connected` is the page and the profiles, for
+  `bluez::DEVICE_CONNECT_LIMIT`.
+- Out of range: whether it fails - `failed to connect`, the error, and a toast - and
+  after how long.
+- In the closed case: a second connect after the first gave up, which fails at once with
+  `InProgress` if bluetoothd still pages; and the lid opened while a connect waits,
+  which may let it succeed
+  ([protocol/linux/bluez.md](../protocol/linux/bluez.md#open-questions)).
+- Connected to another kind of host - an Android phone, another computer: whether the
+  page takes the pods, and what that host does then
+  ([protocol/linux/bluez.md](../protocol/linux/bluez.md#open-questions)).
+- Whether a real paired pair ever takes the service search on `Connect` - with no
+  service records cached, say - where `bluez::DEVICE_CONNECT_LIMIT` and the connection
+  dropped with it would cancel the search
+  ([protocol/linux/bluez.md](../protocol/linux/bluez.md#device1connect)).
+- Whether bluetoothd knows a pair's real MAC over LE too - `PreferredBearer` on
+  `Device1` with the experimental interfaces on, or `LE` in `SupportedTechnologies` in
+  the pair's `info` file - so that `Connect` may make an LE connect ([protocol/linux/bluez.md](../protocol/linux/bluez.md#open-questions)).
+
+A connect under way in the banner and the header's spinner
+([ui.md](ui.md#the-connect-banner)) has run against the fake BlueZ only. To try it on a
+pair:
+
+- A connect that succeeds: "Connecting…" with no button and the spinner from the press
+  to `BlueZ connected`, with the spinner alone, the banner gone, for the second or so
+  between the pair attached and BlueZ's answer.
+- In the closed case, started with `gdbus`: "Connecting…" and the spinner for the whole
+  `bluez::DEVICE_CONNECT_LIMIT`, then the title and the Connect button back together,
+  the button insensitive, and no toast: only the window's press toasts.
+- A connect started from outside - `gdbus` with `org.gtk.Actions.Activate connect`: the
+  same.
+- With two pairs, switching between them while one connects: each shows its own state.
 
 Bluetooth off and on, `rfkill`, `systemctl restart bluetooth`, `kill -9 bluetoothd` and a
 suspend ran on one adapter with a Pro 3 and a Pro 2 (USB-C) (2026-10-26, PR #121):

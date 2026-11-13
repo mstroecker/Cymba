@@ -6,8 +6,11 @@ document; this one covers what holds for all of them.
 
 ## Updates come from snapshots
 
-**Widgets change only from the snapshot stream** ([state.md](state.md#snapshots)), and
-the scanning hint from the scanner's ([The scanning hint](#the-scanning-hint)). The
+**Widgets change only from the snapshot stream** ([state.md](state.md#snapshots)), the
+scanning hint from the scanner's ([The scanning hint](#the-scanning-hint)), and the
+connect banner's title and button and the header's spinner from the connects under way
+([The connect banner](#the-connect-banner)), which redraw at once through
+`Connecting::follow`, with no render loop of their own. The
 window's render loops, one per stream, run on the main context, the only place a widget
 may be touched ([architecture.md](architecture.md#two-threads)). Each:
 
@@ -24,9 +27,11 @@ may be touched ([architecture.md](architecture.md#two-threads)). Each:
 A clock redraws the window every 30 seconds, so a BLE reading's age moves on with no
 snapshot. Under `RECENT` it reads "Last seen just now".
 
-**The one exception is a command that fails** ([commands.md](commands.md#what-the-caller-hears)).
-Its result comes back to the main context and goes up as a toast: an event, never a
-control's state. So the noise control radios keep showing the recorded mode.
+**The exceptions are a command that fails** ([commands.md](commands.md#what-the-caller-hears))
+**and a connect that fails** ([The connect banner](#the-connect-banner)). Each result comes
+back to the main context; a failed command, and a failed connect of the window's own
+press, goes up as a toast: an event, never a control's state. So
+the noise control radios keep showing the recorded mode.
 
 ## Controls that send commands
 
@@ -45,6 +50,81 @@ snapshot again, which puts the switch back.
 
 The Model, Color and Firmware rows below Name are no commands: [Model and color](#model-and-color),
 [firmware.md](firmware.md#what-the-app-does-with-it).
+
+## The connect banner
+
+**A banner under the header bar, with a Connect button, asks BlueZ to connect the pair
+shown** (#195): a deliberate page. What the connect does, and what it may do to a pair
+another host holds: [bluez.md](bluez.md#connecting-a-pair).
+
+- **Revealed from the snapshot alone** (`control::offers_connect`): while BlueZ has the
+  pair paired - it is among BlueZ's names - and the pair is neither
+  [attached](aap-links.md#which-pairs) nor on AAP
+  ([state.md](state.md#what-a-snapshot-shows)). It goes once attachment has attached the
+  pair. The press does not hide it: a pair that connects takes it away, and one that
+  fails leaves it.
+- **A connect under way shows in the banner and the header** (`control::connect_shown`):
+  while one to the pair shown runs, the banner reads "Connecting…" with its button
+  hidden, and a spinner spins at the start of the header bar; once it ends, the title and
+  the button are back and the spinner goes. "Under way" is `connect::Connecting`, the
+  pairs `app.connect` is connecting, whatever ran it - the window's press or another
+  process - never the press itself. The window follows it on the main context and draws
+  it with the last snapshot, so switching pairs shows each pair's own state. Revealing
+  stays the snapshot's alone: a pair attached, or on AAP, before BlueZ answers the
+  connect has the spinner with no banner.
+- **Connect takes no press while both pods are in the case** (#204): while the pair's
+  last live advertisement has both pods charging (`control::in_the_case`, from
+  `PodState::out_of_case`, the test a pull-out uses: [nearby.md](nearby.md#a-pull-out)),
+  the banner reads "Your AirPods are in the case" and its button is insensitive. A
+  connect to pods in the closed case got no reply from bluetoothd within
+  `bluez::DEVICE_CONNECT_LIMIT` ([bluez.md](bluez.md#connecting-a-pair)).
+  - **The charging bits, not status bit 2.** Pods in the case charge
+    ([protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#byte-5-charging-status));
+    bit 2 is also set by a pod in the case with its partner worn
+    ([protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#byte-3-status-byte)).
+  - **A case too empty to charge the pods leaves Connect pressable:** accepted, as a
+    press that fails is a toast.
+  - **Only a live advertisement counts.** A restored reading and AAP have no
+    `out_of_case`; with AAP up the pair is connected, and there is no banner.
+  - **The open case too:** the test reads the charging bits, which are set in the open
+    case as in the closed one, and not the lid. Whether pods in the open case answer a
+    connect is a [hardware check](bluez.md#hardware-checks); Connect off there as well
+    is accepted.
+  - **Late both ways:** a closed case's pods go quiet, and their last reading stands
+    until `BLE_CACHE_TTL`; a pod taken out reads as out only from its next
+    advertisement.
+  - **libadwaita keeps the banner's button internal,** so `control::banner_button`
+    finds it among the banner's children to set it insensitive.
+- **It can show, and its title be wrong, for a pair connected already,** among others in
+  these cases:
+  - **A pair whose UUIDs do not list the AirPods service yet** - as we expect just
+    after a first pairing, before BlueZ's service discovery; not checked. A press
+    fails before any `Connect`, as BlueZ has no paired AirPods at its address, and the
+    window shows the toast.
+  - **Every pair at launch,** until attachment's first sweep attaches it, as
+    `update_names` runs before `sweep`. On one run it did not show on screen: with a
+    Pro 3 connected (firmware 9A348, BlueZ 5.87, 2026-11-08, 5edd065, #195), attachment
+    found the pair connected 48 ms after the app's first log line and attached it,
+    starting AAP, 6 ms later; the user saw no banner.
+  - **Every paired pair, connected ones included, for the whole wait after BlueZ's
+    signals end:** attachment drops every pair as attached, then waits on its backoff
+    (`bluez::Backoff`) before it starts over, while BlueZ's names stay.
+  - **A pair connected from outside the app,** until attachment's `attach` has run for
+    it, and for as long as `attach` cannot read the device.
+
+  In all but the first, a press reaches bluetoothd, which may answer success, connect
+  what is left, or refuse it
+  ([protocol/linux/bluez.md](../protocol/linux/bluez.md#device1connect)), or, for a pair
+  bluetoothd knows over LE, make an LE connect (open:
+  [Open questions](../protocol/linux/bluez.md#open-questions)); a refusal is a toast.
+- **It runs `app.connect`,** the pair's MAC as the action's string target. An app action
+  rather than the window's, so that anything else that runs it runs the same connect. An
+  activation while a connect to the pair is under way does nothing.
+- **A failure is a toast, "Couldn’t connect the AirPods", only for the window's press;**
+  from anywhere else it is logged alone. Every failure is logged. A GAction says
+  nothing of who activated it, so the banner runs the action through `connect::press`,
+  which marks the press for the activation it makes; the activation runs before
+  `press` returns ([protocol/linux/desktop.md](../protocol/linux/desktop.md#gapplication)).
 
 ## The scanning hint
 
@@ -65,7 +145,7 @@ Bluetooth panel, still blocks, are left to the user document
 
 **A second stream, not part of the snapshot.** The scanner's state is no pair's state,
 and the window alone reads it. Carried in the snapshot, every change would wake the tray,
-attachment and the notifier for nothing, and the coordinator would hold state it does
+attachment and the notifiers for nothing, and the coordinator would hold state it does
 not merge. So the window follows `ScanControl::state` as it follows the snapshots, with
 the same loop, and the harness's `Settle` waits for both.
 
@@ -102,9 +182,10 @@ action's state:
 | Preferences switch | Action | Setting | Document |
 |---|---|---|---|
 | Battery notifications | `app.battery-notifications` | `Settings::battery_notifications` | [notifications.md](notifications.md#the-switch) |
+| Nearby notifications | `app.nearby-notifications` | `Settings::nearby_notifications` | [nearby.md](nearby.md#the-switch) |
 | Pause when a pod is taken out | `app.pause-on-ear` | `Settings::pause_on_ear` | [media-pause.md](media-pause.md) |
 
-Both are on by default, also for a file from before the setting.
+Each is on by default, also for a file from before the setting.
 
 **Kept in `~/.config/cymba/settings.json`,** a file rather than GSettings: a GSettings
 schema has to be compiled and installed wherever the app runs, and GIO aborts the process
@@ -154,5 +235,18 @@ icon, and cannot read resources inside the binary.
 
 ## Hardware checks
 
-None open: the UI has no hardware of its own. The features' checks are in their
-documents, the scanning hint's in [bluez.md](bluez.md#hardware-checks).
+The features' checks are in their documents, the scanning hint's and the connect
+banner's in [bluez.md](bluez.md#hardware-checks), but for one:
+
+- **Connect with both pods in the case** (#204): with the pair paired and not connected
+  here, both pods in the open case, the banner reads "Your AirPods are in the case" and
+  its Connect is insensitive; a pod taken out makes it pressable once its advertisement
+  comes, with "Your AirPods are not connected". Byte 5 in the pods'
+  `BLE parsable raw:` lines, at `RUST_LOG=cymba=trace`, tells what each advertisement
+  said.
+- **Pods resting fully charged in the case for hours:** whether byte 5's two charging
+  bits stay set. In the 2026-11-10 run AAP reported status `05` for both pods while
+  their advertisements still sent `b5`, but only for about 3.5 minutes
+  ([protocol/aap/battery.md](../protocol/aap/battery.md#status-05)). If the bits clear,
+  Connect becomes pressable with the pods still in the case. Byte 5 of the
+  pods' `BLE parsable raw:` lines after a few hours in the open case tells.

@@ -92,7 +92,7 @@ Arguments are `gdbus call` text: strings bare, variants as `'<true>'` or `'<4>'`
 | `Connect(s mac)`, `Disconnect(s mac)` | the Bluetooth link; the app attaches or detaches, and disconnecting closes AAP right after BlueZ's `Connected=false`, as the hardware's AAP dies with the link. BlueZ signals `ServicesResolved=true` 4 s after `Connected=true`, and `false` just before `Connected=false`, as bluetoothd does; nothing in the app waits on it |
 | `SetBattery(s mac, s part, y level)` | `left`, `right` or `case` |
 | `SetInEar(s mac, s pod, b in_ear)` | `left` or `right` into an ear - out of the case - or out of it; over AAP an ear report follows within milliseconds |
-| `SetInCase(s mac, s pod, b in_case)` | `left` or `right` into the case - out of the ear - or out of it, onto the table |
+| `SetInCase(s mac, s pod, b in_case)` | `left` or `right` into the case - out of the ear - or out of it, onto the table; a pod charges while in the case, as on a Pro 3 |
 | `SetLid(s mac, b open)` | the case lid; closed on both pods in the case, the pods drop their link, as real ones do. Over BLE, a pod in the closed case stops advertising 4 s after it closes; opened, the pods come back under new addresses, the right one 1 s later and the left 5.5 s |
 | `Repair(s mac)` | new keys, sent at the next key request; the old IRK stops resolving the pair's addresses, and the old key stops decrypting BLE |
 | `HangUp(s mac)` | closes AAP from the pods' end; the link stays, and the app links the pair again after a second, longer after repeated hang-ups (#49) |
@@ -104,6 +104,7 @@ Arguments are `gdbus call` text: strings bare, variants as `'<true>'` or `'<4>'`
 | `SetCall(s mac, b on)` | a call begins or ends: A2DP `idle`, as a call is assumed to leave it, and playing again after if it did |
 | `SetVolume(s mac, q volume)` | the user sets the pair's A2DP volume, 0 to 127 - GNOME's slider, say; not among `VolumeSets`. With no transport, the volume the next one starts at, as a pair back at another volume |
 | `SetVolumeAnswer(s mac, u delay_ms, b to_even)` | the pair answers a volume the app sets that long later, rounded down to even if asked, as bluetoothd has real pods answer: the transport reads the old volume until then. A set of the volume held changes nothing, as in bluetoothd, and is recorded among `VolumeSets` |
+| `SetPageDelay(s mac, u delay_ms)` | the pair's `Device1.Connect` answers that long after the call, and the pair connects only then: a page that takes time, as on hardware, though the fake still answers before `Connected`, unlike bluetoothd; 0 answers at once, as it starts. Refusals still come at once |
 | `Volume(s mac) → q` | the volume of the pair's A2DP transport; fails without one |
 | `VolumeSets(s mac) → aq` | every volume the app set on the pair's transports, in order: a fifth while the user speaks, then the fade back |
 | `SetQuirk(s mac, s quirk, v value)` | `off_needs_allow`, `idle_level_only` (with Conversation Awareness on, level 09 alone on every mode change, as AirPods 4), `echo_every`, `echo_delay_ms`, `stale_report_ms` (report the mode an Off replaced, this long after it, ahead of the echo; 0 for none), `silent_handshake`, `refuse_aap` (turn away the next n AAP connections), `handshake_delay_ms` (hold back the handshake's answer), `report_delay_ms` (hold back the battery and what comes with it), `dump_delay_ms` (from the battery to the startup dump and its mode) |
@@ -179,6 +180,48 @@ nothing. ASCII stops at 127 characters, which `max-length` cuts a longer `SetTex
 and so is never over. The dialog's body changes once an alias is set: `world SetAlias
 ... Kitchen`, then `Disconnect` and `Connect`. A rename sent just after `world HangUp`
 fails, and the `toasts` overlay holds `Couldn’t rename the AirPods`.
+
+The connect banner (#195): in `in-range`, `connect`, the banner under the header bar,
+has `revealed` true in the tree. The pods start in the open case, charging, so it is
+titled `Your AirPods are in the case` and a click is refused as `Insensitive` (#204);
+`world SetInCase 00:00:5E:00:53:01 left false` takes a pod out, and the title reads
+`Your AirPods are not connected`. Then `app Click connect` presses its button, which has the
+app ask the fake BlueZ to connect the pair (`Device1.Connect`), the app logs `asking
+BlueZ to connect` and `BlueZ connected`, the pair attaches and goes on AAP, and
+`revealed` turns false - a click then is refused as `Hidden`. While the connect is
+under way the banner is titled `Connecting…`, its button hidden (a click is refused as
+`Hidden`), and the `connecting` spinner in the header is visible with `spinning` true;
+the fake answers at once, so `world SetPageDelay 00:00:5E:00:53:01 8000` first, to see
+it. `app.connect` does the same from outside the window, as any
+other process on the session bus can: `gdbus call --address "$SESSION_BUS" --dest
+io.github.mstroecker.Cymba --object-path /io/github/mstroecker/Cymba --method
+org.gtk.Actions.Activate connect "[<'00:00:5E:00:53:01'>]" '{}'`. With both pods in
+the closed case (`world SetLid ... false`) the fake refuses the page at once as a page
+timeout, a guess of the fake's - bluetoothd left a `Connect` to pods in the closed case
+unanswered for 30 s, until `bluez::DEVICE_CONNECT_LIMIT` ended the call
+([fake-world.md](../../../docs/development/fake-world.md)). The pods' last reading
+there has both charging, so the banner's Connect is insensitive: run the action with
+`gdbus` as above. It shows no toast, as only the window's press toasts, and logs
+`failed to connect`.
+
+The nearby notification (#196): in `in-range`, with no readings saved before the run,
+the pair's first live advertisement is a return, so `world SetInCase
+00:00:5E:00:53:01 left false` takes a pod out and, at once - the fake pods name a
+host that is no fake adapter's, so the app skips `nearby::SHOW_AFTER`
+([fake-world.md](../../../docs/development/fake-world.md)) -
+`app Notifications` lists a `send` with the ID `nearby-00:00:5E:00:53:01`, titled `AirPods Pro 3 (fake) nearby`, its
+`button` `Connect` running `app.connect` for the pair; the app logs `nearby again;
+advertised as naming another host`. Both
+pods in the open case send nothing. Press the button as GNOME Shell does: `gdbus call
+--address "$SESSION_BUS" --dest io.github.mstroecker.Cymba --object-path
+/io/github/mstroecker/Cymba --method org.freedesktop.Application.ActivateAction connect
+"[<'00:00:5E:00:53:01'>]" '{}'`; the pair connects and a `withdraw` of the ID follows.
+The fake world has no logind, so the user is always at the desktop. A return after a
+quiet stretch needs `nearby::QUIET` of quiet, so only the first one of a run can be seen,
+but a pull-out comes each time the pair is not connected here (`world Disconnect` after
+the button): put the pod back with `world SetInCase 00:00:5E:00:53:01 left true`, wait
+`nearby::IN_CASE_SETTLE`, and take it out again. Each `send` comes at once after the
+pod is taken out. The switch is `nearby-notifications` in Preferences.
 
 The Model and Color rows: `model-name` and `color-name` read the model and `White` -
 `AirPods Pro 3` for a scenario's first pair, `AirPods Pro (2nd gen, USB-C)` for
@@ -258,7 +301,8 @@ click `scan-guide`: it hands the guide's URL to GTK to open, which may reach a b
 on the user's desktop.
 
 Low battery notifications: `SetBattery` a part to 20 or below (5 or below is critical),
-then `app Notifications` lists the notification sent, by ID `low-battery-<MAC>`. Above 25
+a pod out of the case - the pods start in it, charging - then `app Notifications` lists
+the notification sent, by ID `low-battery-<MAC>`. Above 25
 again, clear of the low threshold, or charging, it lists the withdrawal - or, while another
 part is still low, a send naming only the parts that are. The private session bus has no
 notification server, so nothing is shown and GLib warns once; the list records what the app

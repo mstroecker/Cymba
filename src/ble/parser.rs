@@ -6,7 +6,7 @@
 //! (`docs/protocol/ble/proximity-pairing.md#which-pod-sent-it`). The parser
 //! turns them into the physical left and right pods.
 
-use super::decrypt::ENCRYPTED_LEN;
+use super::decrypt::{ENCRYPTED_LEN, LAST_HOST_RANGE};
 
 const PROXIMITY_TYPE: u8 = 0x07;
 const PAYLOAD_PREFIX: u8 = 0x01;
@@ -54,10 +54,19 @@ pub struct ProximityData {
     /// `None` unless the status byte puts a pod in the case - see
     /// [`parse_proximity_data`].
     pub lid_open: Option<bool>,
-    /// Status bit 4, "one pod is in the case" in LibrePods' parser: set by both
-    /// pods while one is in the case and one out, with exceptions
-    /// (`docs/protocol/ble/proximity-pairing.md#byte-3-status-byte`).
-    pub one_in_case: bool,
+    /// Status bit 2: both pods are in the case. Clear, a pod is out of it
+    /// (`docs/protocol/ble/proximity-pairing.md#byte-3-status-byte`). Set
+    /// with a pod worn in the #184 run, which is open (`docs/protocol/ble/proximity-pairing.md#open-questions`).
+    pub both_in_case: bool,
+    /// Status bit 4: a pod is in the open case, set by both pods, with
+    /// exceptions (`docs/protocol/ble/proximity-pairing.md#byte-3-status-byte`).
+    pub pod_in_open_case: bool,
+    /// Byte 5's charging bits 4 and 5 both set: both pods charging, as the
+    /// pods in the case are
+    /// (`docs/protocol/ble/proximity-pairing.md#byte-5-charging-status`).
+    /// From the cleartext alone: [`ProximityData::add_decrypted_data`]
+    /// leaves it, where it replaces each pod's charging flag.
+    pub both_pods_charging: bool,
     pub color: u8,
     pub connection_state: u8,
     /// True when the right pod is primary.
@@ -65,6 +74,11 @@ pub struct ProximityData {
     pub raw_data: Vec<u8>,
 
     pub has_decrypted: bool,
+    /// Decrypted bytes 4-6: the last three bytes of a host's address, which
+    /// host and in which order as
+    /// `docs/protocol/ble/proximity-pairing.md#decrypted-format` says. `None`
+    /// until decrypted.
+    pub last_host: Option<[u8; 3]>,
 }
 
 impl ProximityData {
@@ -90,6 +104,9 @@ impl ProximityData {
         }
 
         self.has_decrypted = true;
+        let mut last_host = [0; 3];
+        last_host.copy_from_slice(&decrypted[LAST_HOST_RANGE]);
+        self.last_host = Some(last_host);
 
         // Levels above 100 are invalid and mean "unknown".
         let split = |b: u8| -> (Option<u8>, bool) {
@@ -191,6 +208,7 @@ pub fn parse_proximity_data(data: &[u8]) -> Result<ProximityData, ParseError> {
     pd.case_charging = ((charging_byte >> 6) & 0x01) != 0;
     pd.right_charging = ((charging_byte >> 5) & 0x01) != 0;
     pd.left_charging = ((charging_byte >> 4) & 0x01) != 0;
+    pd.both_pods_charging = pd.left_charging && pd.right_charging;
     if is_flipped {
         std::mem::swap(&mut pd.left_charging, &mut pd.right_charging);
     }
@@ -204,11 +222,14 @@ pub fn parse_proximity_data(data: &[u8]) -> Result<ProximityData, ParseError> {
     // Lid: byte 6, bit 3 clear means open - but only while a pod is in the case.
     // With them out, bit 3 reads 0 whatever the case is doing, which showed up as
     // a lid stuck on "Open" the whole time the pods were in someone's ears.
-    // Status bit 6 says this pod is in the case, bit 2 that both are. Byte 6's
-    // high nibble can't tell: AirPods Pro 3 sends 0x11 from the open case too.
+    // Status bit 6 says this pod is in the case, bit 2 that both are, with an
+    // exception that is open (`docs/protocol/ble/proximity-pairing.md#open-questions`).
+    // Byte 6's high nibble can't tell: AirPods Pro 3 sends 0x11 from the open
+    // case too.
     let in_case = status & 0x44 != 0;
     pd.lid_open = in_case.then(|| payload[6] & 0x08 == 0);
-    pd.one_in_case = status & 0x10 != 0;
+    pd.both_in_case = status & 0x04 != 0;
+    pd.pod_in_open_case = status & 0x10 != 0;
     // Byte 8, not 9 - 9 is the first byte of the encrypted portion.
     pd.connection_state = payload[8];
 
@@ -247,10 +268,11 @@ pub struct Cleartext {
     /// Whether the pod sending the advertisement is in the case: status bit 6.
     /// With the primary pod, it decides which bit carries which ear.
     pub this_in_case: bool,
-    /// Whether both pods are in the case: status bit 2.
+    /// Whether both pods are in the case: status bit 2, as
+    /// [`ProximityData::both_in_case`] has it.
     pub both_in_case: bool,
-    /// Status bit 4, as [`ProximityData::one_in_case`] has it.
-    pub one_in_case: bool,
+    /// Status bit 4, as [`ProximityData::pod_in_open_case`] has it.
+    pub pod_in_open_case: bool,
     /// Percent, advertised in 10% steps.
     pub left_battery: Option<u8>,
     pub right_battery: Option<u8>,
@@ -289,7 +311,7 @@ impl Cleartext {
         };
         let status = u8::from(self.this_in_case) << 6
             | u8::from(primary_left) << 5
-            | u8::from(self.one_in_case) << 4
+            | u8::from(self.pod_in_open_case) << 4
             | u8::from(bit3_in_ear) << 3
             | u8::from(self.both_in_case) << 2
             | u8::from(bit1_in_ear) << 1;
@@ -315,7 +337,7 @@ impl Cleartext {
         // 0x11 from a pod out of the case, 0x31 from one in a case that is not
         // charging and 0x51 from one in a charging case, 0x39 and 0x59 with the
         // lid closed. Nobody has explained bit 7. The low bits are 1 here; the
-        // hardware's go to 2 once the pods have been put back in the case.
+        // hardware's: `docs/protocol/ble/proximity-pairing.md#byte-6-lid-state`.
         let lid = match self.lid_open {
             None => 0x11,
             Some(open) => {
@@ -453,8 +475,8 @@ mod tests {
             product_id: pd.product_id,
             primary: pd.primary_pod(),
             this_in_case: pd.status & 0x40 != 0,
-            both_in_case: pd.status & 0x04 != 0,
-            one_in_case: pd.one_in_case,
+            both_in_case: pd.both_in_case,
+            pod_in_open_case: pd.pod_in_open_case,
             left_battery: pd.left_battery,
             right_battery: pd.right_battery,
             case_battery: pd.case_battery,
@@ -486,6 +508,7 @@ mod tests {
             secondary_charging: secondary.1,
             case_battery: Some(case.0),
             case_charging: case.1,
+            last_host: [0xA1, 0xA2, 0xA3],
             mac_suffix: ZEROED_SUFFIX,
             tail: [0; 4],
         }
@@ -514,7 +537,7 @@ mod tests {
                             primary,
                             this_in_case,
                             both_in_case,
-                            one_in_case: bit(5),
+                            pod_in_open_case: bit(5),
                             left_battery: Some(80),
                             right_battery: Some(30),
                             case_battery: None,
@@ -585,6 +608,41 @@ mod tests {
         }
     }
 
+    /// Status, battery and charging bytes from the Pro 3 run of 2026-11-10
+    /// (`docs/protocol/ble/proximity-pairing.md#byte-5-charging-status`):
+    /// `b5` from either pod with both in the case reads both charging; `95`
+    /// from a pod alone in the case, its own bit only; `a5` and `af` from its
+    /// worn partner, the other pod's bit only; `8f` with both out, neither.
+    /// The left pod's `24`, bit 2 set from the case with the right pod worn,
+    /// reads as its byte 5 says.
+    #[test]
+    fn reads_both_pods_charging_from_byte_5() {
+        let parse = |status: u8, battery: u8, charging: u8| {
+            let cleartext = [
+                0x01, 0x27, 0x20, status, battery, charging, 0x11, 0x00, 0x05,
+            ];
+            parse_proximity_data(&proximity_message(&cleartext, &[0; ENCRYPTED_LEN])).unwrap()
+        };
+        for (status, battery, charging, left, right) in [
+            (0x35, 0xa9, 0xb5, true, true),
+            (0x55, 0x9a, 0xb5, true, true),
+            (0x73, 0xaa, 0x95, true, false),
+            (0x53, 0xaa, 0x95, false, true),
+            (0x24, 0xfa, 0x95, true, false),
+            (0x13, 0xaa, 0xa5, true, false),
+            (0x13, 0xfa, 0xaf, true, false),
+            (0x33, 0xaa, 0xa5, false, true),
+            (0x0b, 0xaa, 0x8f, false, false),
+        ] {
+            let pd = parse(status, battery, charging);
+            assert_eq!(
+                (pd.left_charging, pd.right_charging, pd.both_pods_charging),
+                (left, right, left && right),
+                "{status:02x} {charging:02x}"
+            );
+        }
+    }
+
     #[test]
     fn parses_connection_state_from_byte_8() {
         let pd = parse_proximity_data(&advert(0x35, 0x76, 0xba)).unwrap();
@@ -593,7 +651,8 @@ mod tests {
     }
 
     /// Captured lid bytes: open and closed, with and without an AAP link up,
-    /// both pods in the case (status bit 2).
+    /// both pods in the case, status bit 2 set
+    /// (`docs/protocol/ble/proximity-pairing.md#byte-3-status-byte`).
     #[test]
     fn lid_state_comes_from_byte_6() {
         for (lid, open) in [(0x52, true), (0x5A, false), (0x51, true), (0x59, false)] {
@@ -609,33 +668,56 @@ mod tests {
     fn lid_state_is_unknown_out_of_the_case() {
         let pd = parse_proximity_data(&advert_with_lid(0x0b, 0x76, 0x8f, 0x11)).unwrap();
         assert_eq!(pd.lid_open, None);
-        assert!(!pd.one_in_case);
+        assert!(!pd.pod_in_open_case);
     }
 
     /// From the first #71 capture: with the left pod in the open case and the
     /// right worn, both advertise. The worn pod's `0x13` reads no lid, but its
-    /// status bit 4 says a pod is in the case - the left pod, whose `0x73` reads
-    /// the lid. Bit 4 is clear in `0x0b`, both worn, and `0x01`, both on the
-    /// desk, with no pod in the case; and in `0x29`, from the second #71
-    /// capture, the left pod in hand while the right was already in the case,
-    /// which the rule for bit 4 does not explain
+    /// status bit 4 says a pod is in the open case - the left pod, whose `0x73`
+    /// reads the lid. Bit 4 reads clear in `0x0b`, both worn, and `0x01`, both
+    /// on the desk, with no pod in the case; and in `0x29`, from the second #71
+    /// capture, sent by the left pod in hand as it was put back, the right in
+    /// the open case, which the rule does not explain
     /// (`docs/protocol/ble/proximity-pairing.md#open-questions`).
     #[test]
-    fn a_worn_pod_says_when_its_partner_is_in_the_case() {
+    fn a_worn_pod_says_when_its_partner_is_in_the_open_case() {
         let parse = |cleartext: [u8; 9]| {
             parse_proximity_data(&proximity_message(&cleartext, &[0; ENCRYPTED_LEN])).unwrap()
         };
         let in_case = parse([0x01, 0x27, 0x20, 0x73, 0xaa, 0x94, 0x32, 0x00, 0x04]);
-        assert_eq!((in_case.lid_open, in_case.one_in_case), (Some(true), true));
+        assert_eq!(
+            (in_case.lid_open, in_case.pod_in_open_case),
+            (Some(true), true)
+        );
         let worn = parse([0x01, 0x27, 0x20, 0x13, 0xaa, 0xa4, 0x11, 0x00, 0x04]);
-        assert_eq!((worn.lid_open, worn.one_in_case), (None, true));
+        assert_eq!((worn.lid_open, worn.pod_in_open_case), (None, true));
         for status in [0x0b, 0x01, 0x29] {
             let pd = parse([0x01, 0x27, 0x20, status, 0xaa, 0x8f, 0x11, 0x00, 0x00]);
             assert_eq!(
-                (pd.lid_open, pd.one_in_case),
+                (pd.lid_open, pd.pod_in_open_case),
                 (None, false),
                 "{status:#04x}"
             );
+        }
+    }
+
+    /// Status bytes from the #71 captures and the #184 run: bit 2 reads as
+    /// both pods in the case in those sent with both in the case, open or
+    /// closed, and as not in those sent with one out - worn, in hand or on
+    /// the desk. The #184 run's `0x24`, bit 2 set with the right pod worn, is
+    /// left out: it is open
+    /// (`docs/protocol/ble/proximity-pairing.md#open-questions`).
+    #[test]
+    fn says_whether_both_pods_are_in_the_case() {
+        let parse = |status: u8| {
+            let cleartext = [0x01, 0x27, 0x20, status, 0xaa, 0xb3, 0x11, 0x00, 0x00];
+            parse_proximity_data(&proximity_message(&cleartext, &[0; ENCRYPTED_LEN])).unwrap()
+        };
+        for status in [0x04, 0x15, 0x75, 0x35, 0x55] {
+            assert!(parse(status).both_in_case, "{status:#04x}");
+        }
+        for status in [0x0b, 0x01, 0x13, 0x73, 0x71, 0x51, 0x29, 0x2b] {
+            assert!(!parse(status).both_in_case, "{status:#04x}");
         }
     }
 
@@ -939,6 +1021,39 @@ mod tests {
         assert_eq!(pd.left_battery, None);
     }
 
+    /// Decrypted bytes 4-6 are read as `last_host`: a payload encrypted with
+    /// the pair's key, decrypted and read, names the host it was built with,
+    /// in the order written; an advertisement not decrypted names none.
+    #[test]
+    fn reads_the_last_host_from_decrypted_bytes_4_to_6() {
+        use crate::ble::decrypt::{decrypt_for_device, encrypt, random_key};
+        use bluer::Address;
+
+        let mut pd = parse_proximity_data(&advert(0b0010_0000, 0x87, 0x00)).unwrap();
+        assert_eq!(pd.last_host, None);
+        let plain = Plaintext {
+            header: 0x10,
+            primary_battery: Some(63),
+            primary_charging: true,
+            secondary_battery: Some(41),
+            secondary_charging: false,
+            case_battery: Some(77),
+            case_charging: false,
+            last_host: [0x53, 0x00, 0xF0],
+            mac_suffix: ZEROED_SUFFIX,
+            tail: [0; 4],
+        }
+        .to_bytes();
+        // Worked out by hand: 63% charging is 0xbf, 41% 0x29, 77% 0x4d.
+        assert_eq!(crate::hex(&plain[..7]), "10 bf 29 4d 53 00 f0");
+
+        let key = random_key();
+        let mac = Address::new([0x00, 0x00, 0x5E, 0x00, 0x53, 0x01]);
+        let decrypted = decrypt_for_device(&encrypt(&plain, &key), &key, mac).unwrap();
+        pd.add_decrypted_data(&decrypted).unwrap();
+        assert_eq!(pd.last_host, Some([0x53, 0x00, 0xF0]));
+    }
+
     /// The decrypted batteries as the builder writes them, read back on both
     /// sides of the flip.
     #[test]
@@ -953,6 +1068,7 @@ mod tests {
                 secondary_charging: false,
                 case_battery: Some(100),
                 case_charging: true,
+                last_host: [0xA1, 0xA2, 0xA3],
                 mac_suffix: ZEROED_SUFFIX,
                 tail: [0; 4],
             };

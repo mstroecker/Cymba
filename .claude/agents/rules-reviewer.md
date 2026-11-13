@@ -81,7 +81,10 @@ carries a GTK object toward tokio.
   re-checked against the stored IRK on every hit, taken alone and never across an await;
   and what the keystore and the readings file last saved (`Persistence::saved`,
   `SavedReadings::saved`), a copy of the disk that is never shown and changes only with a
-  save that succeeded.
+  save that succeeded; and `Inner::device_names` and `Inner::attached`, attachment's view
+  of BlueZ - its paired devices' names, and the pairs it has attached - each replaced
+  whole by `set_device_names` or `set_attached` and broadcast under the write lock,
+  `attached` emptied when attachment stops.
   Flag the firmware version dropped with the link or pruned with `BLE_CACHE_TTL`, and
   anything else of AAP kept beside it;
 - a read loop or command that finds its link by MAC alone. Writes from a loop or a
@@ -156,9 +159,68 @@ carries a GTK object toward tokio.
 - puts the harness's fake player on a bus that is not private, or waits in a test on a
   sleep rather than on `MediaControl::settled` after the snapshot shows the move.
 
+**Nearby notification.** The nearby notification and whether the user is at the desktop
+(`nearby`, `presence`, #196). Flag a diff that:
+- counts a pair as returned from a restored reading, or measures the quiet stretch from
+  anything but a live advertisement's time, a restored reading's time, a snapshot with
+  the pair connected here or the first without it after one; keys a return by an advertising address; reads ages on
+  `Instant` rather than the wall clock (`podstate::age`), or keeps a time heard after now;
+- stops making a resume's return pending for every known pair, or lets a return waiting
+  from before the sleep be shown from a reading taken before it; takes a resume, or when the
+  sleep began, from anywhere but logind's `PrepareForSleep` at its unique name and the
+  manager's path; dates the sleep other than by its `PrepareForSleep(true)`, or the
+  `false` with none before it; carries resumes so that latest-wins can lose one (a count,
+  not a flag), or reads them in `Returns` other than as an argument; takes a reading from
+  before the sleep, or one `nearby::QUIET` old or older, as the return, or loses one heard since it began because it was taken
+  in before the resume; uses a pending return up other than by notifying it or by a
+  connection here that begins after the resume - a pair still shown connected after it
+  uses nothing up;
+- lets a reading from before the sleep start any return while one is pending, unless the
+  sleep began after now;
+- stops taking a pod out of the case as a return each time; counts a pull-out without the
+  pods in the case for `nearby::IN_CASE_SETTLE` from the first live reading that said so,
+  by a count of readings rather than the wall clock, from a restored reading, across a
+  snapshot with the pair connected here - a stay begun after the disconnect starts no
+  earlier than the first snapshot without the connection - or from a reading before the
+  sleep while a resume's return is pending; gives two notices for a pull-out that
+  coincides with another return;
+- shows a return before it has qualified for `nearby::SHOW_AFTER`, unbroken, other than
+  where the next item allows the skip, or keeps the
+  wait across a snapshot where it does not qualify, or into a new return or a resume; has `run` not wake for it, wake for
+  it while the user is away, or sleep longer than `SHOW_AFTER`; or calls either
+  `IN_CASE_SETTLE` or `SHOW_AFTER` anything but a guess until a run here measures it;
+- skips `SHOW_AFTER` other than when the last live advertisement, heard since the pair was
+  last connected here (never one cached while connected), names a host
+  (`PodState::last_host`) that ends none of `Snapshot::adapter_addresses`, or byte 8 is
+  `0x05`, `0x06` or `0x07`; skips it for `0x04`, another value, no host, or adapters not
+  known or none; reads the adapters' addresses other than from the `AdapterSet` (a call of its own),
+  or keeps them after attachment stops; or calls either reading anything but unconfirmed
+  (decrypted bytes 4-6 seen on one Pro 3, byte 8's values LibrePods') wherever it is used;
+- changes what `Returns` or `nearby::Gate` decides without changing `docs/app/nearby.md`'s
+  decision table or withdrawal table, and `nearby::tests::the_decision_table` or
+  `the_withdrawal_table`, row for row in the same order; or tests the tables' text rather
+  than what `Returns` and `Gate` decide;
+- notifies more than once per return, without a pod out of the case
+  (`PodState::out_of_case`), for a pair attached or on AAP, or while the user is away;
+  or no longer withdraws the notice once the pair connects here, `nearby::SHOWN_FOR` after
+  it is shown (judged in `Returns` on the wall clock, the time an argument, `run` sleeping
+  at most `SHOWN_FOR`), or at the quit;
+- calls logind other than at the unique name read with `GetNameOwner`, without
+  `NoAutoStart`, or outside `presence::CALL_LIMIT`; takes a session's signal from
+  another sender, or `NameOwnerChanged` from anyone but the bus; splits logind's signals
+  over several streams, so that a resume and the session's changes can be taken out of
+  order; subscribes after reading; counts the user as away when logind cannot tell;
+  stops taking resumes in while no session is found; sends whether the user is at the
+  desktop and the resumes apart, or has `nearby::run` judge with one of them, or the
+  snapshot, older than the latest;
+- connects from the notification other than through `app.connect` with the pair's MAC,
+  or toasts its failure;
+- takes the nearby notifier's first snapshot after scanning has started.
+
 **Parsing and tests.** `aap::battery`, `aap::conversation`, `aap::ear`, `aap::info`, `aap::keys`, `aap::name`, `aap::noise`, `aap::message`, `ble::parser`,
-`ble::decrypt` and `ble::rpa` take bytes and return values, and `volume::Ducking`,
-`media::EarPause`, `volume::a2dp_in` and `volume::a2dp_active_in` take the time or BlueZ's objects as values - flag I/O, global state or coordinator access
+`ble::decrypt` and `ble::rpa` take bytes and return values, and `noise::ModeState`,
+`ear::EarState`, `rpa::ResolvedAddresses`, `notify::Alerts`, `nearby::Returns`,
+`volume::Ducking`, `media::EarPause`, `volume::a2dp_in` and `volume::a2dp_active_in` take the time or BlueZ's objects as values - flag I/O, global state or coordinator access
 added to them, and new parsing without a unit test in the same module. gitleaks catches key
 literals; flag what it cannot: a test reading the real keystore or settings, or calling
 `migrate::from_linuxpods` (`~/.local/share/cymba`, `~/.config/cymba`, their `linuxpods`
@@ -169,11 +231,13 @@ accepted exception), or a captured advertisement committed together with the key
 
 **UI.**
 - A widget updated from anywhere but the snapshot stream, or for the scanning hint the
-  scanner's (`ScanControl::state`) - a button handler setting a label from a command's
+  scanner's (`ScanControl::state`), or for the connect banner's title and button and the
+  header's spinner `connect::Connecting` - a button handler setting a label from a command's
   result, or the hint's pause button showing the pause before the scanner reports it,
   say. A setting is not device state: its switch bound to
   an app action and showing that action's state is fine, as Battery notifications' is with
-  `app.battery-notifications` and pausing on the ears' with `app.pause-on-ear`.
+  `app.battery-notifications`, Nearby notifications' with `app.nearby-notifications` and
+  pausing on the ears' with `app.pause-on-ear`.
 - A `StringList` behind a `DropDown` spliced, appended or removed without reading
   `selected()` first.
 - Noise Control or the Conversation Awareness switch left sensitive when the device is

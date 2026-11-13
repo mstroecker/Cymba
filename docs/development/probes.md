@@ -138,7 +138,7 @@ pair prints nothing under that pair's key.
 
 - **Never prints** key bytes.
 - **Prints** the stored pairs' MACs, and plaintexts that carry the last three bytes of
-  the pair's MAC and of the last host's address.
+  the pair's MAC and of a host's address.
 
 When a decryption does not match:
 

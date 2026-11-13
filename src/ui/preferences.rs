@@ -28,6 +28,7 @@ pub(super) fn create_preferences_dialog(
     let settings_group = adw::PreferencesGroup::builder().title("General").build();
     settings_group.add(&unavailable_row("auto-connect", "Auto-connect"));
     settings_group.add(&battery_notifications_row());
+    settings_group.add(&nearby_notifications_row());
     settings_group.add(&pause_on_ear_row());
     page.add(&settings_group);
 
@@ -83,6 +84,24 @@ fn pause_on_ear_row() -> adw::ActionRow {
     let row = adw::ActionRow::builder()
         .title("Pause when a pod is taken out")
         .subtitle("And play again once it is back in")
+        .activatable_widget(&switch)
+        .build();
+    row.add_suffix(&switch);
+    row
+}
+
+/// The switch for nearby notifications, bound to the application action that
+/// `notifications::deliver_nearby` adds, as the battery notifications'
+/// switch is to theirs.
+fn nearby_notifications_row() -> adw::ActionRow {
+    let switch = gtk::Switch::builder()
+        .name("nearby-notifications")
+        .action_name(format!("app.{}", super::notifications::NEARBY_ACTION))
+        .valign(gtk::Align::Center)
+        .build();
+    let row = adw::ActionRow::builder()
+        .title("Nearby notifications")
+        .subtitle("Offer to connect your AirPods when they are back")
         .activatable_widget(&switch)
         .build();
     row.add_suffix(&switch);
