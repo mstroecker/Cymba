@@ -121,7 +121,9 @@ Not yet tried on a pair (#167); see [`docs/app/media-pause.md`](docs/app/media-p
 
 A pair the app knows that is not connected to this computer - heard in its case, or worn
 while on a phone - shows a banner at the top of the window, "Your AirPods are not
-connected", whose Connect button asks Bluetooth to connect it. Tried on a Pro 3
+connected", whose Connect button asks Bluetooth to connect it. While both pods charge
+in the case, also at startup with the lid closed, it reads "Your AirPods are in the
+case", and Connect waits until a pod is out. Tried on a Pro 3
 (2026-11-08): it takes the AirPods from an iPhone, idle or playing, which gives them up;
 from another phone or computer it is not tried yet (#195); see
 [`docs/app/ui.md`](docs/app/ui.md#the-connect-banner).
