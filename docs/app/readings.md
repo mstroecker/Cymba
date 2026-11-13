@@ -40,6 +40,11 @@ run. It is shown, with its age, but left out of GNOME Settings by
 out by that flag, never by a freshness window there, which would withdraw the battery and
 export it again (#62): [battery.md](battery.md#gnome-settings).
 
+Its charging flags count for the window's connect banner as any reading's do: both pods
+charging reads as both in the case, the pods in the closed case advertising nothing
+(#206, [ui.md](ui.md#the-connect-banner)). A pull-out never comes from it
+([nearby.md](nearby.md#a-pull-out)).
+
 Checked on a Pro 3, 2026-11-05, at `da79836`: relaunched with the pair in its closed
 case, the window showed its last levels with their age, and GNOME Settings showed no
 battery for it until it connected again.

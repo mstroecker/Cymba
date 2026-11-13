@@ -72,20 +72,37 @@ another host holds: [bluez.md](bluez.md#connecting-a-pair).
   it with the last snapshot, so switching pairs shows each pair's own state. Revealing
   stays the snapshot's alone: a pair attached, or on AAP, before BlueZ answers the
   connect has the spinner with no banner.
-- **Connect takes no press while both pods are in the case** (#204): while the pair's
-  last live advertisement has both pods charging (`control::in_the_case`, from
-  `PodState::out_of_case`, the test a pull-out uses: [nearby.md](nearby.md#a-pull-out)),
-  the banner reads "Your AirPods are in the case" and its button is insensitive. A
-  connect to pods in the closed case got no reply from bluetoothd within
-  `bluez::DEVICE_CONNECT_LIMIT` ([bluez.md](bluez.md#connecting-a-pair)).
+- **Connect takes no press while both pods are in the case** (#204): while the state
+  the snapshot reports for the pair has both pods charging (`control::in_the_case`:
+  `PodState::left_charging` and `right_charging`), the banner reads "Your AirPods are
+  in the case" and its button is insensitive. A connect to pods in the closed case got
+  no reply from bluetoothd within `bluez::DEVICE_CONNECT_LIMIT`
+  ([bluez.md](bluez.md#connecting-a-pair)).
   - **The charging bits, not status bit 2.** Pods in the case charge
     ([protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#byte-5-charging-status));
     bit 2 is also set by a pod in the case with its partner worn
     ([protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md#byte-3-status-byte)).
+    Such a pod's first advertisements read its worn partner's level as unknown, with
+    the charging bit set in that decrypted byte; the parser keeps the cleartext's
+    charging flag for a pod whose level is unknown
+    ([identification.md](identification.md#batteries-in-the-clear-and-encrypted)), so
+    they read one pod charging, not both.
+  - **The reported state, whatever the reading came from** (#206): a live
+    advertisement, or a reading restored at startup ([readings.md](readings.md)). The
+    banner does not ask where a reading came from. With the lid closed the pods do not
+    advertise, so their last reading stands; at startup, a restored reading is the only
+    one there is. Read from live advertisements alone, the banner would offer Connect
+    for pods in the closed case at every startup, and a press would fail at
+    `bluez::DEVICE_CONNECT_LIMIT`.
+  - **Pods taken out while the app was not running** read as in the case until they are
+    heard: accepted. Pods out of the case advertise, so this lasts until their first
+    advertisement; pods not heard at all are likely out of range, and a connect to them
+    would fail too.
+  - **A pull-out is not read this way:** the nearby notification counts a stay in the
+    case from live readings alone ([nearby.md](nearby.md#a-pull-out)). Over AAP the
+    pair is connected, and there is no banner.
   - **A case too empty to charge the pods leaves Connect pressable:** accepted, as a
     press that fails is a toast.
-  - **Only a live advertisement counts.** A restored reading and AAP have no
-    `out_of_case`; with AAP up the pair is connected, and there is no banner.
   - **The open case too:** the test reads the charging bits, which are set in the open
     case as in the closed one, and not the lid. Whether pods in the open case answer a
     connect is a [hardware check](bluez.md#hardware-checks); Connect off there as well
@@ -236,7 +253,7 @@ icon, and cannot read resources inside the binary.
 ## Hardware checks
 
 The features' checks are in their documents, the scanning hint's and the connect
-banner's in [bluez.md](bluez.md#hardware-checks), but for one:
+banner's in [bluez.md](bluez.md#hardware-checks), but for these:
 
 - **Connect with both pods in the case** (#204): with the pair paired and not connected
   here, both pods in the open case, the banner reads "Your AirPods are in the case" and
@@ -244,9 +261,15 @@ banner's in [bluez.md](bluez.md#hardware-checks), but for one:
   comes, with "Your AirPods are not connected". Byte 5 in the pods'
   `BLE parsable raw:` lines, at `RUST_LOG=cymba=trace`, tells what each advertisement
   said.
-- **Pods resting fully charged in the case for hours:** whether byte 5's two charging
-  bits stay set. In the 2026-11-10 run AAP reported status `05` for both pods while
+- **Started with both pods in the closed case** (#206): quit the app with the pair heard
+  in the case and not connected here, close the lid, and start it again within
+  `BLE_CACHE_TTL`. The banner should read "Your AirPods are in the case" from the
+  restored reading, its Connect insensitive, and the window show both pods charging; a
+  pod taken out should make it pressable once its advertisement comes.
+- **Pods resting fully charged in the case for hours:** whether both pods keep reading
+  charging. In the 2026-11-10 run AAP reported status `05` for both pods while
   their advertisements still sent `b5`, but only for about 3.5 minutes
   ([protocol/aap/battery.md](../protocol/aap/battery.md#status-05)). If the bits clear,
-  Connect becomes pressable with the pods still in the case. Byte 5 of the
-  pods' `BLE parsable raw:` lines after a few hours in the open case tells.
+  Connect becomes pressable with the pods still in the case. The window's charging
+  icons, which show the flags the banner reads, and byte 5 of the pods'
+  `BLE parsable raw:` lines after a few hours in the open case tell.
