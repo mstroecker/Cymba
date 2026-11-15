@@ -453,8 +453,8 @@ pub(crate) fn is_answer(e: &anyhow::Error) -> bool {
     })
 }
 
-/// A bus [`Media`] reaches, connected when first needed, and again after the
-/// connection failed.
+/// A bus [`Media`] or `crate::mic` reaches, connected when first needed, and
+/// again after the connection failed.
 pub(crate) struct Bus {
     /// What is on it, for the logs: `BlueZ`, `the media players`.
     what: &'static str,

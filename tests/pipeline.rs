@@ -39,7 +39,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use bluer::Address;
 use tempfile::TempDir;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use zbus::Connection;
@@ -4361,10 +4361,10 @@ impl AudioSide for FakeAudio {
 /// test hears what the task asks of the audio side and tells it what
 /// PipeWire would. The card switch reads the transport on the test's bus,
 /// where the fake BlueZ is, and the players on a session bus of its own -
-/// never the user's - with none on it.
+/// never the user's - with none on it unless a test serves one.
 struct Offering {
     /// The players' bus; stopped with the fixture.
-    _session: PrivateBus,
+    session: PrivateBus,
     /// The Preferences switch, as the app action hands it on.
     switch: watch::Sender<bool>,
     control: MicControl,
@@ -4434,8 +4434,8 @@ impl Offering {
 
 impl Fixture {
     /// Starts the microphone's task on `app`'s coordinator, with the switch
-    /// on.
-    async fn start_offering(&self, app: &App) -> Offering {
+    /// on, waiting `switch_reply` for the audio side to answer a card switch.
+    async fn start_offering(&self, app: &App, switch_reply: Duration) -> Offering {
         let session = PrivateBus::start().expect("dbus-daemon starts");
         let (switch, on) = watch::channel(true);
         let (asked_tx, asked) = mpsc::unbounded_channel();
@@ -4456,9 +4456,10 @@ impl Fixture {
         );
         let offering = offering
             .with_call_limit(MEDIA_CALL_LIMIT)
-            .with_waits(MIC_WAIT, MIC_WAIT);
+            .with_waits(MIC_WAIT, MIC_WAIT)
+            .with_switch_reply_limit(switch_reply);
         Offering {
-            _session: session,
+            session,
             switch,
             control,
             asked,
@@ -4475,6 +4476,13 @@ const LAPTOP_MIC: &str = "alsa_input.pci-0000_00_1f.3.analog-stereo";
 /// microphone's switch on and PipeWire ready: the source up, and made the
 /// default input in place of [`LAPTOP_MIC`], which PipeWire has read back.
 async fn offered() -> (Fixture, App, Offering, mpsc::UnboundedSender<AudioEvent>) {
+    offered_with(mic::SWITCH_REPLY_LIMIT).await
+}
+
+/// [`offered`], the task waiting `switch_reply` for a card switch's answer.
+async fn offered_with(
+    switch_reply: Duration,
+) -> (Fixture, App, Offering, mpsc::UnboundedSender<AudioEvent>) {
     let fixture = Fixture::new(&[(PAIR, PRO_3, PAIR_LEVELS)]).await;
     fixture
         .world
@@ -4483,7 +4491,7 @@ async fn offered() -> (Fixture, App, Offering, mpsc::UnboundedSender<AudioEvent>
         .unwrap();
     let mut app = fixture.start_app().await;
     app.stop_listening().await;
-    let mut offering = fixture.start_offering(&app).await;
+    let mut offering = fixture.start_offering(&app, switch_reply).await;
     let side = offering.side().await;
     side.send(AudioEvent::Ready {
         default: Some(LAPTOP_MIC.into()),
@@ -4592,8 +4600,9 @@ async fn the_link_going_ends_the_stream() {
 }
 
 /// An audio side ended with the switch off, which says it is gone only
-/// after, leaves nothing unavailable: the switch on again starts a new one
-/// at once (#209).
+/// after, is not heard: the availability, unknown once the switch is off,
+/// is not touched again - never unavailable - and the switch on again
+/// starts a new side at once (#209).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_audio_side_gone_after_the_switch_off_leaves_the_switch_usable() {
     let (_fixture, _app, mut offering, side) = offered().await;
@@ -4601,13 +4610,141 @@ async fn an_audio_side_gone_after_the_switch_off_leaves_the_switch_usable() {
     assert!(matches!(offering.next().await, AudioRequest::Source(false)));
     assert!(matches!(offering.next().await, AudioRequest::SetDefault(_)));
     assert!(matches!(offering.next().await, AudioRequest::Quit));
-    // What PipeWire's thread says as it ends; the task may have let go of it.
+    assert!(offering.settled().await);
+    let mut availability = offering.control.availability();
+    assert_eq!(
+        *availability.borrow_and_update(),
+        mic::Availability::Unknown
+    );
+    // What PipeWire's thread says as it ends; the task has let go of it.
     let _ = side.send(AudioEvent::Gone("the connection to PipeWire ended".into()));
+    assert!(offering.settled().await);
+    assert!(
+        !availability.has_changed().unwrap(),
+        "the availability changed: {:?}",
+        *availability.borrow()
+    );
+    offering.switch.send_replace(true);
+    offering.side().await;
+}
+
+/// PipeWire going while the source is the default input, and the switch
+/// turned off after: the row is usable again at once, and the side is
+/// started again on its own, to put the user's default input back - and
+/// then ended (#209).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_default_input_goes_back_after_pipewire_went() {
+    let (_fixture, _app, mut offering, side) = offered().await;
+    side.send(AudioEvent::Gone("the connection to PipeWire ended".into()))
+        .unwrap();
+    assert!(offering.settled().await);
+    offering.switch.send_replace(false);
     assert!(offering.settled().await);
     assert_eq!(
         *offering.control.availability().borrow(),
         mic::Availability::Unknown
     );
-    offering.switch.send_replace(true);
-    offering.side().await;
+    let side = offering.side().await;
+    // PipeWire back, the configured default still naming the source.
+    side.send(AudioEvent::Ready {
+        default: Some(mic::NODE_NAME.into()),
+    })
+    .unwrap();
+    assert!(matches!(
+        offering.next().await,
+        AudioRequest::SetDefault(Some(name)) if name == LAPTOP_MIC
+    ));
+    assert!(matches!(offering.next().await, AudioRequest::Quit));
+    assert!(offering.settled().await);
+    assert_eq!(
+        *offering.control.availability().borrow(),
+        mic::Availability::Unknown
+    );
+}
+
+/// A recording that starts the microphone, and ends: the stream stops, and
+/// the side is asked for the card switch, whose answer is handed back.
+async fn record_and_stop(
+    offering: &mut Offering,
+    side: &mpsc::UnboundedSender<AudioEvent>,
+) -> oneshot::Sender<anyhow::Result<()>> {
+    side.send(AudioEvent::Recording(true)).unwrap();
+    offering.audio().await;
+    side.send(AudioEvent::Recording(false)).unwrap();
+    let AudioRequest::SwitchCard { mac, done } = offering.next().await else {
+        panic!("not the card switch");
+    };
+    assert_eq!(mac, PAIR);
+    done
+}
+
+/// PipeWire's thread ending during the card switch, with its answer never
+/// coming, holds nothing up: the switch is given up after its limit, the
+/// side is started again, and the next recording starts the microphone
+/// again (#209).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_side_ending_during_the_card_switch_leaves_the_microphone_usable() {
+    let (fixture, _app, mut offering, side) = offered_with(MIC_WAIT).await;
+    let unanswered = record_and_stop(&mut offering, &side).await;
+    side.send(AudioEvent::Gone("the connection to PipeWire ended".into()))
+        .unwrap();
+    let side = offering.side().await;
+    side.send(AudioEvent::Ready {
+        default: Some(mic::NODE_NAME.into()),
+    })
+    .unwrap();
+    assert!(matches!(offering.next().await, AudioRequest::Source(true)));
+    eventually("the stream idle after the switch given up", || {
+        offering.settled()
+    })
+    .await;
+    side.send(AudioEvent::Recording(true)).unwrap();
+    offering.audio().await;
+    assert!(
+        fixture
+            .world
+            .with_pods(PAIR, |pods| pods.mic_running())
+            .await
+            .unwrap()
+    );
+    drop(unanswered);
+}
+
+/// A player the card switch paused is not played again while the pair has
+/// no A2DP transport: it would play on another output (#209).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn nothing_plays_again_without_a2dp_after_the_card_switch() {
+    let (_fixture, _app, mut offering, side) = offered().await;
+    let player = FakePlayer::serve(offering.session.address(), "music")
+        .await
+        .unwrap();
+    player.set_status(Playback::Playing).await.unwrap();
+    let done = record_and_stop(&mut offering, &side).await;
+    // What the switch does to the player.
+    player.set_status(Playback::Paused).await.unwrap();
+    done.send(Ok(())).unwrap();
+    eventually("the stream idle after the card switch", || {
+        offering.settled()
+    })
+    .await;
+    assert_eq!(player.status(), Playback::Paused);
+    assert_eq!(player.calls(), [] as [&str; 0]);
+}
+
+/// The app quitting during the card switch asks the side to set the card
+/// back, then puts the default input back and takes the source down (#209).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_quit_during_the_card_switch_sets_the_card_back() {
+    let (_fixture, _app, mut offering, side) = offered().await;
+    let unanswered = record_and_stop(&mut offering, &side).await;
+    let control = offering.control.clone();
+    let quit = tokio::spawn(async move { control.shut_down().await });
+    assert!(matches!(offering.next().await, AudioRequest::SetBackCard));
+    assert!(matches!(
+        offering.next().await,
+        AudioRequest::SetDefault(Some(name)) if name == LAPTOP_MIC
+    ));
+    assert!(matches!(offering.next().await, AudioRequest::Source(false)));
+    timeout(TIMEOUT, quit).await.unwrap().unwrap();
+    drop(unanswered);
 }

@@ -1,26 +1,6 @@
-//! The AirPods' microphone over AAP, offered as an input on PipeWire, while
-//! A2DP plays on in stereo (#209). Experimental, and off unless the
-//! Preferences switch turns it on: it switches the pair's card off and back
-//! after every stop, the workaround #212 is to replace.
-//!
-//! With the switch on and a pair attached on AAP, a source named
-//! "AirPods Microphone" is up, and is made the default input. Only while
-//! something records from it does the pair's microphone run: started when a
-//! recording begins, stopped [`STOP_AFTER`] after the last one ends.
-//! Conversation Awareness is turned off for the stream, and on again after
-//! it, if it was on. After every stop the pair's card is switched off and
-//! back, and the players the switch paused are played again: on a Pro 3 one
-//! pod stayed silent after a stop until then. `docs/app/mic.md` says how and
-//! why, and what is not known.
-//!
-//! [`Stream`] decides when to start, stop and turn Conversation Awareness
-//! off and on, and [`DefaultInput`] when to make the source the default
-//! input and put the user's back, each from what it is told and the time,
-//! as `volume::Ducking` does, and each is tested on its own. [`Mic::run`]
-//! carries them out, in a task of its own beside attachment: commands to
-//! the pods through `Coordinator::command`, the source and the default
-//! input through the audio side - PipeWire's thread, `pipewire` - and the
-//! card switch's BlueZ and MPRIS calls in a task of their own.
+//! The AirPods' microphone over AAP, offered as an input on PipeWire (#209):
+//! [`Stream`] and [`DefaultInput`] decide, [`Mic::run`] carries it out.
+//! How and why: `docs/app/mic.md`.
 
 #[cfg(feature = "mic")]
 pub mod decoder;
@@ -77,6 +57,20 @@ pub const RESUME_POLL: Duration = Duration::from_millis(100);
 /// that a quit never seems to hang.
 pub const QUIT_LIMIT: Duration = Duration::from_secs(2);
 
+/// How long each step of a card switch may take on PipeWire's thread before
+/// it is given up and the card set back: a choice, as long as `mic_probe`'s
+/// `PACTL_LIMIT`.
+pub const SWITCH_STEP_LIMIT: Duration = Duration::from_secs(5);
+
+/// How long the task waits for PipeWire's thread to answer a card switch:
+/// past both steps' [`SWITCH_STEP_LIMIT`], with room. A thread that does not
+/// answer by then is taken to be gone.
+pub const SWITCH_REPLY_LIMIT: Duration = Duration::from_secs(15);
+
+/// How long the task waits for PipeWire's thread to answer
+/// [`AudioRequest::Sync`]: a round trip to PipeWire, a choice.
+pub const SYNC_LIMIT: Duration = Duration::from_secs(5);
+
 /// Whether the microphone can be offered, for the Preferences switch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Availability {
@@ -101,6 +95,9 @@ pub enum AudioRequest {
         mac: Address,
         done: oneshot::Sender<Result<()>>,
     },
+    /// Set the card of a switch under way back to the profile it had, and
+    /// fail the switch: for the quit, so the card is not left off.
+    SetBackCard,
     /// Answer `done` once everything asked before is through.
     Sync(oneshot::Sender<()>),
     /// End.
@@ -122,7 +119,9 @@ pub enum AudioEvent {
 
 /// The audio side, as the task holds it.
 pub trait AudioSide: Send + Sync {
-    /// Hands `request` over: false once the audio side has ended.
+    /// Hands `request` over: false once the audio side has ended, which
+    /// drops it. A request handed over before the side ended and never
+    /// carried out is dropped as it ends, so a `oneshot` in it fails.
     fn ask(&self, request: AudioRequest) -> bool;
 }
 
@@ -426,6 +425,16 @@ impl DefaultInput {
     pub fn is_made(&self) -> bool {
         self.made.is_some()
     }
+
+    /// Putting `before` back did not reach PipeWire: it is put back at the
+    /// next update with the source down, if the default input still reads
+    /// the source then.
+    pub fn not_put_back(&mut self, before: Option<String>) {
+        self.made = Some(Made {
+            before,
+            applied: true,
+        });
+    }
 }
 
 /// The pair the source is for in `snapshot`: the first attached pair with a
@@ -499,8 +508,9 @@ impl MicControl {
     }
 
     /// Stops a stream that runs, puts Conversation Awareness and the default
-    /// input back, and takes the source down: for the quit, which bounds it
-    /// with [`QUIT_LIMIT`]. No card switch: it would hold the quit up.
+    /// input back, sets back a card switch under way, and takes the source
+    /// down: for the quit, which bounds it with [`QUIT_LIMIT`]. No card
+    /// switch is started: it would hold the quit up.
     pub async fn shut_down(&self) {
         let (done, answer) = oneshot::channel();
         if self.requests.send(ControlRequest::Quit(done)).is_ok() {
@@ -537,10 +547,15 @@ pub struct Mic {
     limit: Duration,
     /// [`RESUME_WAIT`] but in a test, which may ask for less.
     resume_wait: Duration,
-    /// The audio side, while it runs, and what it tells.
+    /// [`SWITCH_REPLY_LIMIT`] but in a test, which may ask for less.
+    switch_reply_limit: Duration,
+    /// The stop and the card switch after it, while under way.
+    switching: Option<tokio::task::JoinHandle<()>>,
+    /// The audio side, while it runs.
     audio: Option<Arc<dyn AudioSide>>,
     /// What the audio side that runs now tells: a channel of its own per
-    /// side, so one that was ended - its `Gone` late - tells nothing.
+    /// side, replaced as a side is started and as one is ended, so an ended
+    /// side's `Gone` is never heard.
     audio_events: mpsc::UnboundedReceiver<AudioEvent>,
     /// Whether the audio side has said it is ready.
     ready: bool,
@@ -598,6 +613,8 @@ impl Mic {
             }),
             limit: media::CALL_LIMIT,
             resume_wait: RESUME_WAIT,
+            switch_reply_limit: SWITCH_REPLY_LIMIT,
+            switching: None,
             audio: None,
             audio_events,
             ready: false,
@@ -637,6 +654,14 @@ impl Mic {
     pub fn with_waits(mut self, stop_after: Duration, resume_wait: Duration) -> Self {
         self.stream.stop_after = stop_after;
         self.resume_wait = resume_wait;
+        self
+    }
+
+    /// Waits `limit` for the audio side to answer a card switch, in place of
+    /// [`SWITCH_REPLY_LIMIT`]: for a test of an answer that never comes.
+    #[cfg(feature = "harness")]
+    pub fn with_switch_reply_limit(mut self, limit: Duration) -> Self {
+        self.switch_reply_limit = limit;
         self
     }
 
@@ -680,7 +705,10 @@ impl Mic {
                     }
                 }
                 Some(internal) = self.internal.1.recv() => match internal {
-                    Internal::Switched => self.stream.switched(),
+                    Internal::Switched => {
+                        self.switching = None;
+                        self.stream.switched();
+                    }
                     Internal::NotTurnedOff(mac) => self.stream.not_turned_off(mac),
                 },
                 () = sleep_until(due), if due.is_some() => {}
@@ -749,8 +777,12 @@ impl Mic {
                     Some(ran) if self.ready => self.backoff.ended(ran),
                     _ => self.backoff.failed(),
                 };
-                self.availability
-                    .send_replace(Availability::Unavailable(reason));
+                // With the switch off, the row stays usable: `settle` says
+                // nothing is known.
+                if self.on() {
+                    self.availability
+                        .send_replace(Availability::Unavailable(reason));
+                }
                 self.audio = None;
                 self.ready = false;
                 self.recording = false;
@@ -772,8 +804,13 @@ impl Mic {
         }
         let on = self.on();
         // The audio side runs while the switch is on, for the source and
-        // for whether anything records.
-        if on && self.missing.is_none() && self.audio.is_none() && self.restart_at.is_none() {
+        // for whether anything records; and while the source is the
+        // default input, to put the one before back.
+        if (on || self.default_input.is_made())
+            && self.missing.is_none()
+            && self.audio.is_none()
+            && self.restart_at.is_none()
+        {
             let (events, audio_events) = mpsc::unbounded_channel();
             self.audio_events = audio_events;
             match (self.start_audio)(events) {
@@ -825,25 +862,27 @@ impl Mic {
         }
 
         // Once the switch is off, and nothing is left to put back, the
-        // audio side ends.
-        // So does the wait to start it again: turned on again, it is tried
-        // at once, and until then nothing says PipeWire is not there.
+        // audio side ends, and so does the wait to start it again: turned
+        // on again, it is tried at once.
         if !on && !self.source_up && !self.default_input.is_made() && !self.stream.is_switching() {
             if let Some(side) = self.audio.take() {
                 side.ask(AudioRequest::Quit);
+                self.audio_events = mpsc::unbounded_channel().1;
             }
             self.ready = false;
             self.restart_at = None;
             self.backoff = Backoff::default();
-            if self.missing.is_none() {
-                self.availability.send_if_modified(|availability| {
-                    let unknown = Availability::Unknown;
-                    (*availability != unknown) && {
-                        *availability = unknown;
-                        true
-                    }
-                });
-            }
+        }
+        // With the switch off and no side ready, nothing says PipeWire is
+        // not there for the next try.
+        if !on && !self.ready && self.missing.is_none() {
+            self.availability.send_if_modified(|availability| {
+                let unknown = Availability::Unknown;
+                (*availability != unknown) && {
+                    *availability = unknown;
+                    true
+                }
+            });
         }
     }
 
@@ -864,7 +903,10 @@ impl Mic {
                     "The default input put back to {}",
                     before.as_deref().unwrap_or("none")
                 );
-                side.ask(AudioRequest::SetDefault(before));
+                if !side.ask(AudioRequest::SetDefault(before.clone())) {
+                    // The side ended unheard: put back by the next one.
+                    self.default_input.not_put_back(before);
+                }
             }
         }
     }
@@ -908,7 +950,7 @@ impl Mic {
                 let done = self.coordinator.command(mac, Command::Microphone(false));
                 let internal = self.internal.0.clone();
                 let switch = self.card_switch(mac);
-                tokio::spawn(async move {
+                self.switching = Some(tokio::spawn(async move {
                     // After the stop, whether it was sent or not: a stop
                     // that failed may still have reached the pods.
                     if let Err(e) = done.await {
@@ -918,7 +960,7 @@ impl Mic {
                         switch.await;
                     }
                     let _ = internal.send(Internal::Switched);
-                });
+                }));
             }
         }
     }
@@ -926,13 +968,18 @@ impl Mic {
     /// The card switch after a stop: `None` without an audio side to ask.
     fn card_switch(&self, mac: Address) -> Option<impl Future<Output = ()> + Send + use<>> {
         let side = self.audio.clone()?;
-        let (buses, limit, wait) = (self.buses.clone(), self.limit, self.resume_wait);
+        let waits = SwitchWaits {
+            limit: self.limit,
+            resume: self.resume_wait,
+            reply: self.switch_reply_limit,
+        };
+        let buses = self.buses.clone();
         Some(async move {
             // One switch at a time: a stop comes only after the last
             // switch is done.
             let mut bluez = buses.bluez.lock().await;
             let mut session = buses.session.lock().await;
-            match switch_card(mac, &*side, &mut bluez, &mut session, limit, wait).await {
+            match switch_card(mac, &*side, &mut bluez, &mut session, waits).await {
                 Ok(()) => tracing::info!("The card of {mac} is back, and plays"),
                 Err(e) => tracing::warn!("The card switch of {mac} after the stop: {e:#}"),
             }
@@ -946,15 +993,29 @@ impl Mic {
             return;
         };
         let (done, answer) = oneshot::channel();
-        if side.ask(AudioRequest::Sync(done)) {
-            let _ = answer.await;
+        if side.ask(AudioRequest::Sync(done))
+            && tokio::time::timeout(SYNC_LIMIT, answer).await.is_err()
+        {
+            tracing::warn!("PipeWire's thread did not answer within {SYNC_LIMIT:?}");
         }
     }
 
     /// Stops a stream that runs, puts Conversation Awareness and the default
-    /// input back, and takes the source down - see [`MicControl::shut_down`].
+    /// input back, sets back a card switch under way, and takes the source
+    /// down - see [`MicControl::shut_down`].
     async fn shut_down(&mut self) {
         self.quitting = true;
+        if self.stream.is_switching() {
+            // No further switch is asked for; the one under way, if any,
+            // is set back.
+            if let Some(switching) = self.switching.take() {
+                switching.abort();
+            }
+            if let Some(side) = &self.audio {
+                tracing::info!("Setting the card back: the app quits during its switch");
+                side.ask(AudioRequest::SetBackCard);
+            }
+        }
         let mut waits = Vec::new();
         if let Some(mac) = self.stream.streaming() {
             tracing::info!("Stopping the microphone of {mac}: the app quits");
@@ -1022,18 +1083,35 @@ async fn wait_for<F: Future<Output = bool>>(
     }
 }
 
+/// How long the card switch waits for each thing: see [`switch_card`].
+#[derive(Debug, Clone, Copy)]
+struct SwitchWaits {
+    /// Each BlueZ and MPRIS call.
+    limit: Duration,
+    /// A new transport, a player's pause, A2DP to play: [`RESUME_WAIT`].
+    resume: Duration,
+    /// PipeWire's thread's answer: [`SWITCH_REPLY_LIMIT`].
+    reply: Duration,
+}
+
 /// Switches the pair's card off and back, waits for a new A2DP transport,
 /// and plays again every player the switch paused; with one playing, waits
 /// for the pair's A2DP to play too, and switches again if it does not, up
-/// to [`SWITCH_TRIES`] switches. A read that fails counts as not yet.
+/// to [`SWITCH_TRIES`] switches. With no new A2DP transport, nothing is
+/// played again: it would play elsewhere. A read that fails counts as not
+/// yet.
 async fn switch_card(
     mac: Address,
     side: &dyn AudioSide,
     bluez: &mut Bus,
     session: &mut Bus,
-    limit: Duration,
-    resume_wait: Duration,
+    waits: SwitchWaits,
 ) -> Result<()> {
+    let SwitchWaits {
+        limit,
+        resume: resume_wait,
+        reply,
+    } = waits;
     // The players playing before, each to be played again if the switch
     // pauses it. Without them, the switch goes on all the same.
     let players = match session.connection(limit).await {
@@ -1067,8 +1145,9 @@ async fn switch_card(
             side.ask(AudioRequest::SwitchCard { mac, done }),
             "the audio side has ended"
         );
-        switched
+        tokio::time::timeout(reply, switched)
             .await
+            .with_context(|| format!("PipeWire's thread did not answer within {reply:?}"))?
             .context("the audio side ended during the switch")??;
         let switched = tokio::time::Instant::now();
         // Whether playing before A2DP is set up again leaves both pods
@@ -1101,10 +1180,14 @@ async fn switch_card(
         if playing.is_empty() {
             return Ok(());
         }
+        anyhow::ensure!(
+            new,
+            "no new A2DP transport after card switch {attempt}: nothing is played again"
+        );
         futures_util::future::join_all(
             playing
                 .iter()
-                .map(|player| play_again(conn, player, switched, limit, resume_wait)),
+                .map(|player| play_again(conn, &system, mac, player, switched, limit, resume_wait)),
         )
         .await;
         let played = tokio::time::Instant::now();
@@ -1122,11 +1205,13 @@ async fn switch_card(
 
 /// Waits up to [`RESUME_WAIT`] from `switched` for `player`, playing before
 /// the switch, to report the pause the switch causes, and plays it again
-/// only then: played before it reported the pause, a player stayed paused
-/// (protocol/aap/microphone.md, Run 3). One still playing, stopped or gone
-/// is left as it is.
+/// only then, and only while the pair has an A2DP transport: played before
+/// it reported the pause, a player stayed paused (protocol/aap/microphone.md,
+/// Run 3). One still playing, stopped or gone is left as it is.
 async fn play_again(
     conn: &Connection,
+    system: &Connection,
+    mac: Address,
     player: &Player,
     switched: tokio::time::Instant,
     limit: Duration,
@@ -1147,11 +1232,19 @@ async fn play_again(
         }
         tokio::time::sleep(RESUME_POLL).await;
     };
-    if status == Some(Playback::Paused) {
-        match media::call(conn, player, "Play", limit).await {
-            Ok(()) => tracing::info!("Played {} again after the card switch", player.name),
-            Err(e) => tracing::warn!("{e:#}"),
-        }
+    if status != Some(Playback::Paused) {
+        return;
+    }
+    if !matches!(a2dp(system, mac, limit).await, Ok(Some(_))) {
+        tracing::info!(
+            "{} is left paused: {mac} has no A2DP transport after the card switch",
+            player.name
+        );
+        return;
+    }
+    match media::call(conn, player, "Play", limit).await {
+        Ok(()) => tracing::info!("Played {} again after the card switch", player.name),
+        Err(e) => tracing::warn!("{e:#}"),
     }
 }
 
@@ -1461,6 +1554,30 @@ mod tests {
             default.update(true, Some("usb_headset")),
             Some(DefaultChange::Source)
         );
+    }
+
+    /// A put back that did not reach PipeWire is asked for again once the
+    /// default input reads the source with the source down; if it reads
+    /// another by then, that one stays.
+    #[test]
+    fn a_put_back_lost_is_asked_again() {
+        let mut default = DefaultInput::default();
+        default.update(true, Some("alsa_input.mic"));
+        default.update(true, Some(NODE_NAME));
+        assert_eq!(
+            default.update(false, Some(NODE_NAME)),
+            Some(DefaultChange::PutBack(Some("alsa_input.mic".into())))
+        );
+        default.not_put_back(Some("alsa_input.mic".into()));
+        assert!(default.is_made());
+        assert_eq!(
+            default.update(false, Some(NODE_NAME)),
+            Some(DefaultChange::PutBack(Some("alsa_input.mic".into())))
+        );
+
+        default.not_put_back(Some("alsa_input.mic".into()));
+        assert_eq!(default.update(false, Some("usb_headset")), None);
+        assert!(!default.is_made());
     }
 
     /// A default left naming the source - a quit that did not put it back -

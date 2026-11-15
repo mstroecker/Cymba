@@ -22,6 +22,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::io::Cursor;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -40,7 +41,10 @@ use pw::types::ObjectType;
 use tokio::sync::{mpsc, oneshot};
 
 use super::decoder::Decoder;
-use super::{AudioEvent, AudioRequest, AudioSide, DEFAULT_SOURCE_KEY, NODE_DESCRIPTION, NODE_NAME};
+use super::{
+    AudioEvent, AudioRequest, AudioSide, DEFAULT_SOURCE_KEY, NODE_DESCRIPTION, NODE_NAME,
+    SWITCH_STEP_LIMIT,
+};
 use crate::aap::mic;
 
 /// The samples kept waiting for the source at most: 0.2 s. Older ones go,
@@ -52,24 +56,54 @@ const MAX_BUFFERED: usize = mic::SAMPLE_RATE as usize / 5;
 /// apart on average, and in bursts, do not run it dry at once. A choice.
 const PREFILL: usize = 2 * 4 * mic::FRAME_SAMPLES;
 
-/// How long each step of a card switch may take before it is given up: a
-/// choice, as long as `mic_probe`'s `PACTL_LIMIT`.
-const SWITCH_STEP_LIMIT: Duration = Duration::from_secs(5);
-
 /// How often a card switch under way is looked at, for its limit.
 const SWITCH_CHECK: Duration = Duration::from_millis(500);
 
-/// The thread's handle on the task's side: a PipeWire channel, which wakes
-/// the thread's loop.
-struct Requests(std::sync::Mutex<pw::channel::Sender<AudioRequest>>);
+/// The PipeWire channel's sender, which wakes the thread's loop, until the
+/// thread ends: a `pw::channel` send never fails once the thread is gone.
+type Shared = Arc<Mutex<Option<pw::channel::Sender<AudioRequest>>>>;
+
+/// The thread's handle on the task's side.
+struct Requests(Shared);
 
 impl AudioSide for Requests {
     fn ask(&self, request: AudioRequest) -> bool {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .send(request)
-            .is_ok()
+        match &*lock(&self.0) {
+            Some(sender) => sender.send(request).is_ok(),
+            None => false,
+        }
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Marks the side ended as the thread ends, however it ends - a panic too -
+/// and only then says so with [`AudioEvent::Gone`]. The sender taken, the
+/// channel goes with the thread's receiver, and with it every request still
+/// queued: each `oneshot` in one fails.
+struct Ending {
+    requests: Shared,
+    events: mpsc::UnboundedSender<AudioEvent>,
+}
+
+impl Ending {
+    /// Ends the side, the first time, saying `reason`.
+    fn end(&self, reason: String) {
+        let sender = lock(&self.requests).take();
+        if sender.is_some() {
+            drop(sender);
+            let _ = self.events.send(AudioEvent::Gone(reason));
+        }
+    }
+}
+
+impl Drop for Ending {
+    fn drop(&mut self) {
+        self.end("PipeWire's thread failed".into());
     }
 }
 
@@ -87,20 +121,25 @@ pub fn start_at(
     events: mpsc::UnboundedSender<AudioEvent>,
 ) -> Box<dyn AudioSide> {
     let (sender, receiver) = pw::channel::channel();
-    let thread_events = events.clone();
+    let requests: Shared = Arc::new(Mutex::new(Some(sender)));
+    let ending = Ending {
+        requests: requests.clone(),
+        events,
+    };
     let spawned = std::thread::Builder::new()
         .name("cymba-pipewire".into())
         .spawn(move || {
-            let reason = match serve(remote, receiver, &thread_events) {
+            let served = serve(remote, receiver, &ending.events);
+            ending.end(match served {
                 Ok(()) => "the connection to PipeWire ended".to_string(),
                 Err(e) => format!("{e:#}"),
-            };
-            let _ = thread_events.send(AudioEvent::Gone(reason));
+            });
         });
+    // Not spawned, the closure is dropped, and `Ending` with it.
     if let Err(e) = spawned {
-        let _ = events.send(AudioEvent::Gone(format!("no thread for PipeWire: {e}")));
+        tracing::warn!("No thread for PipeWire: {e}");
     }
-    Box::new(Requests(std::sync::Mutex::new(sender)))
+    Box::new(Requests(requests))
 }
 
 /// The samples on their way to the source.
@@ -199,7 +238,7 @@ struct State {
 }
 
 /// Connects to PipeWire and serves the task until the connection ends or
-/// the task's handle goes.
+/// the task asks it to quit. Every reply still owed fails as it returns.
 fn serve(
     remote: Option<String>,
     requests: pw::channel::Receiver<AudioRequest>,
@@ -319,6 +358,7 @@ fn serve(
             AudioRequest::Audio(packet) => decode(&packet, &state, &ring),
             AudioRequest::SetDefault(name) => set_default(name.as_deref(), &state),
             AudioRequest::SwitchCard { mac, done } => start_switch(mac, done, &state),
+            AudioRequest::SetBackCard => set_back_switch(&state),
             AudioRequest::Sync(done) => match core.sync(0) {
                 Ok(seq) => PENDING_SYNCS.with(|p| {
                     p.borrow_mut().insert(seq.seq(), done);
@@ -343,6 +383,7 @@ fn serve(
             .done
             .send(Err(anyhow::anyhow!("PipeWire's thread ended")));
     }
+    PENDING_SYNCS.with(|pending| pending.borrow_mut().clear());
     Ok(())
 }
 
@@ -584,6 +625,22 @@ fn give_up_switch(state: &Rc<RefCell<State>>) {
     let _ = switch.done.send(Err(anyhow::anyhow!(
         "the card did not report its switch {step} within {SWITCH_STEP_LIMIT:?}"
     )));
+}
+
+/// Sets the card of a switch under way back, and fails the switch.
+fn set_back_switch(state: &Rc<RefCell<State>>) {
+    let mut state = state.borrow_mut();
+    let Some(switch) = state.switch.take() else {
+        return;
+    };
+    if let Some(card) = state.cards.get(&switch.card)
+        && let Err(e) = set_profile(card, switch.back)
+    {
+        tracing::warn!("The card could not be set back: {e:#}");
+    }
+    let _ = switch
+        .done
+        .send(Err(anyhow::anyhow!("the card was set back for the quit")));
 }
 
 /// Puts the source up, or takes it down.
@@ -828,7 +885,7 @@ context.objects = [
             let child = match child {
                 Ok(child) => child,
                 Err(e) => {
-                    eprintln!("no PipeWire daemon to test with: {e}");
+                    untried(&format!("no PipeWire daemon to test with: {e}"));
                     return None;
                 }
             };
@@ -920,6 +977,13 @@ context.objects = [
         }
     }
 
+    /// Says why part of a test is not tried: on CI (`CI` set) that fails the
+    /// test, so CI never skips it unseen; elsewhere it is only said.
+    fn untried(why: &str) {
+        assert!(std::env::var_os("CI").is_none(), "untried on CI: {why}");
+        eprintln!("untried: {why}");
+    }
+
     /// The next event, failing the test if none comes in time.
     async fn next(events: &mut mpsc::UnboundedReceiver<AudioEvent>) -> AudioEvent {
         tokio::time::timeout(Duration::from_secs(10), events.recv())
@@ -941,9 +1005,11 @@ context.objects = [
     /// Against a PipeWire of its own: ready with no default input; the
     /// source is recorded from while a recorder is linked to it, and no
     /// longer once it goes - where this PipeWire's ports can be linked
-    /// without a session manager; the default input set to the source and
-    /// cleared, each told back; a switch of a card PipeWire does not have
-    /// fails; asked to quit, the side ends.
+    /// without a session manager, which on CI they must be; the default
+    /// input set to the source and cleared, each told back; a switch of a
+    /// card PipeWire does not have fails; asked to quit, the side ends, a
+    /// sync asked right after fails rather than waiting forever, and once
+    /// the side has said it is gone, nothing more is taken.
     #[test]
     fn serves_a_pipewire_of_its_own() {
         let Some(daemon) = Daemon::start() else {
@@ -983,7 +1049,7 @@ context.objects = [
             }
             // By port: whether every pw-link links nodes is not known. A
             // PipeWire whose ports this setup does not bring up leaves the
-            // recording untried, and says so.
+            // recording untried, which fails the test on CI.
             let output = format!("{NODE_NAME}:capture_MONO");
             let linked = daemon
                 .try_run(&["pw-link", &output, "cymba-test-record:input_MONO"])
@@ -996,9 +1062,9 @@ context.objects = [
                     assert_eq!(next(&mut events).await, AudioEvent::Recording(false));
                 }
                 Err(failed) => {
-                    eprintln!("the recording is not tried: no link here ({failed})");
                     recorder.kill().unwrap();
                     recorder.wait().unwrap();
+                    untried(&format!("the recording: no link here ({failed})"));
                 }
             }
 
@@ -1018,11 +1084,21 @@ context.objects = [
 
             assert!(side.ask(AudioRequest::Source(false)));
             assert!(side.ask(AudioRequest::Quit));
+            // Taken before the thread ends, or refused: either way it fails.
+            let (done, answer) = oneshot::channel();
+            side.ask(AudioRequest::Sync(done));
+            tokio::time::timeout(Duration::from_secs(10), answer)
+                .await
+                .expect("the sync fails in time")
+                .expect_err("no sync after the quit");
             loop {
                 if let AudioEvent::Gone(_) = next(&mut events).await {
                     break;
                 }
             }
+            let (done, answer) = oneshot::channel();
+            assert!(!side.ask(AudioRequest::Sync(done)));
+            answer.await.expect_err("nothing answers once gone");
         });
     }
 
