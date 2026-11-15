@@ -4590,3 +4590,24 @@ async fn the_link_going_ends_the_stream() {
     let received = fixture.world.received(PAIR).await.unwrap();
     assert!(!received.contains(&cymba::aap::mic::STOP.to_vec()));
 }
+
+/// An audio side ended with the switch off, which says it is gone only
+/// after, leaves nothing unavailable: the switch on again starts a new one
+/// at once (#209).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_audio_side_gone_after_the_switch_off_leaves_the_switch_usable() {
+    let (_fixture, _app, mut offering, side) = offered().await;
+    offering.switch.send_replace(false);
+    assert!(matches!(offering.next().await, AudioRequest::Source(false)));
+    assert!(matches!(offering.next().await, AudioRequest::SetDefault(_)));
+    assert!(matches!(offering.next().await, AudioRequest::Quit));
+    // What PipeWire's thread says as it ends; the task may have let go of it.
+    let _ = side.send(AudioEvent::Gone("the connection to PipeWire ended".into()));
+    assert!(offering.settled().await);
+    assert_eq!(
+        *offering.control.availability().borrow(),
+        mic::Availability::Unknown
+    );
+    offering.switch.send_replace(true);
+    offering.side().await;
+}

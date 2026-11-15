@@ -1,6 +1,7 @@
 # Architecture
 
-How Cymba is put together: its two threads, the channels between them, the tasks
+How Cymba is put together: its threads - GTK's, tokio's and, while the microphone's
+switch is on, PipeWire's - the channels between them, the tasks
 `main.rs` starts, and the coordinator they all meet at. A map: each part has a document
 of its own, linked below. The source tree, file by file, is in
 [AGENTS.md](../../AGENTS.md#architecture).
@@ -24,7 +25,7 @@ goes the other way is spawned on the runtime.
 | Nearby notices | `nearby::run` | the main context, which sends them: [nearby.md](nearby.md) | `async-channel` |
 | Whether the user is at the desktop, and the resumes from sleep, counted, with when the last sleep began: one value | `presence::run` | `nearby::run` | `watch`: [nearby.md](nearby.md#at-the-desktop) |
 | A quit asked for by SIGTERM or SIGINT | `quit_on_signals` | the main context, which quits as the menu does | `async-channel` |
-| Commands to the AirPods | the window, the tray | the pair's link | its queue (`Coordinator::command`), the result back on a `oneshot`: [commands.md](commands.md) |
+| Commands to the AirPods | the window, the tray, `mic::Mic` | the pair's link | its queue (`Coordinator::command`), the result back on a `oneshot`: [commands.md](commands.md) |
 | A connect asked for | `app.connect`, on the main context | BlueZ, from a task on the runtime | the result back on a `oneshot`, awaited on the main context: [bluez.md](bluez.md#connecting-a-pair) |
 | The Preferences switch for pausing on the ears | the main context | `media::Media` | `watch`: [media-pause.md](media-pause.md) |
 | The Preferences switch for the microphone | the main context | `mic::Mic` | `watch`: [mic.md](mic.md#the-switch) |
@@ -67,7 +68,7 @@ The window's render loops run on the main context: [ui.md](ui.md#updates-come-fr
 At the quit, `main.rs` puts back a lowered volume, for `volume::RESTORE_LIMIT` at most
 ([volume.md](volume.md)), stops the microphone's stream and puts the default input back,
 for `mic::QUIT_LIMIT` at most ([mic.md](mic.md)), and saves the readings once more,
-without a bound ([readings.md](readings.md)). Both run before the runtime is dropped. A second SIGTERM or
+without a bound ([readings.md](readings.md)). All three run before the runtime is dropped. A second SIGTERM or
 SIGINT exits at once.
 
 ## The coordinator

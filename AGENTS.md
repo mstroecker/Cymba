@@ -411,8 +411,8 @@ notification was Conversation Awareness's speech level `09` (#150).
   return values, and carry the bulk of the test suite; `noise::ModeState`,
   `ear::EarState`, `rpa::ResolvedAddresses`, `notify::Alerts`, `nearby::Returns`,
   `volume::Ducking`, `media::EarPause` and `mic::Stream` take the time as an argument for the same reason,
-  and `mic::DefaultInput` the default input as it reads; `volume::a2dp_in`
-  and `volume::a2dp_active_in` read BlueZ's objects as values. `aap::decode` routes every packet by its header and opcode;
+  and `mic::DefaultInput` the default input as it reads; `volume::a2dp_in`,
+  `volume::a2dp_active_in` and `volume::a2dp_transport_in` read BlueZ's objects as values. `aap::decode` routes every packet by its header and opcode;
   each module's `is_*` and `parse_*` still check the header themselves, so they stay safe
   to call on their own.
 - Use synthetic test vectors - never commit a real device key. New test keys come from
@@ -469,7 +469,7 @@ notification was Conversation Awareness's speech level `09` (#150).
   `bluez::Backoff` when it ends while the switch is on.
 - A harness build must behave like a plain one unless the fake world's environment asks
   otherwise (`CYMBA_AAP_SOCKET_DIR`, `CYMBA_HARNESS_AUTOMATION=1`, set only by
-  `make test` and `make fake-world` leave it at
+  `scripts/fake-world.sh`): `make test` and `make fake-world` leave it at
   `target/debug/cymba`, where it meets real AirPods and the user's session. Nothing in
   the harness writes to the app's real data or config directory, or LinuxPods' ones, and
   its fake media player goes only on a private session bus: `fakepods` refuses

@@ -1455,4 +1455,31 @@ mod tests {
         .unwrap();
         assert!(found.path.as_str().ends_with("/sep2/fd1"));
     }
+
+    /// Any A2DP source transport of the pair, with a volume or not, the active
+    /// one first, with whether it is active; none of another pair's or a sink.
+    #[test]
+    fn finds_a_transport_to_wait_for() {
+        let found = |transports: &[(&str, Address, &str, &str, Option<u16>)]| {
+            a2dp_transport_in(&objects(transports), PAIR).map(|(path, active)| {
+                (
+                    path.as_str().rsplit('/').next().unwrap().to_string(),
+                    active,
+                )
+            })
+        };
+        assert_eq!(
+            found(&[
+                ("/sep1/fd0", PAIR, SOURCE, "idle", None),
+                ("/sep2/fd1", PAIR, SOURCE, "active", None),
+            ]),
+            Some(("fd1".into(), true))
+        );
+        assert_eq!(
+            found(&[("/sep1/fd0", PAIR, SOURCE, "pending", None)]),
+            Some(("fd0".into(), false))
+        );
+        assert_eq!(found(&[("/sep1/fd0", OTHER, SOURCE, "active", None)]), None);
+        assert_eq!(found(&[("/sep1/fd0", PAIR, SINK, "active", None)]), None);
+    }
 }
