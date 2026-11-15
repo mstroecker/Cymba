@@ -48,7 +48,8 @@ cannot be changed: fix a broken release with a new version.
 | `cymba-<version>.intoto.jsonl` | SLSA build provenance bundle, for offline verification with `--bundle` |
 
 The binaries are built with `cargo auditable`, which embeds the dependency list,
-on Ubuntu 24.04, so they need glibc 2.39 or newer.
+on Ubuntu 24.04, so they need glibc 2.39 or newer, and PipeWire's client library,
+`libpipewire-0.3.so.0`, which they link for the microphone.
 
 ## Verifying a release
 

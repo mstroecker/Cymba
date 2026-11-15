@@ -121,6 +121,12 @@ acquired by the audio server.
   here (#150); calls have run in the fake world only.
 - **No headset-profile transport is looked for:** while that assumption holds it would tell
   nothing more, and a call that left A2DP `active` has not been seen.
+- **Not a call over the microphone over AAP.** With that switch on, a call app records
+  from the microphone's source while A2DP stays `active` ([mic.md](mic.md)), so a speech
+  level during such a call lowers the volume. Conversation Awareness is turned off while
+  the microphone runs, if it was on ([mic.md](mic.md#conversation-awareness)); whether no
+  level comes then, for the whole call, has not been run on a pair
+  ([mic.md](mic.md#hardware-checks)).
 - **A call that comes while the volume is lowered** does not stop it coming back: the fade
   goes on with A2DP idle, and with A2DP gone the volume is put back once it returns.
 

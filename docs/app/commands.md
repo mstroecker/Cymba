@@ -55,7 +55,7 @@ Each caller gets a `Result`:
 **Dropping the future does not withdraw the command.** Once queued, it is carried out.
 
 The window shows a failure as a toast ([ui.md](ui.md#updates-come-from-snapshots)); the
-tray logs it.
+tray and the microphone's task log it.
 
 ## Hardware checks
 

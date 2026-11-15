@@ -1,12 +1,12 @@
 # Architecture
 
-How Cymba is put together: its threads - GTK's, tokio's and, while the microphone's
-switch is on, PipeWire's - the channels between them, the tasks
+How Cymba is put together: its threads - GTK's, tokio's and, for the microphone,
+PipeWire's - the channels between them, the tasks
 `main.rs` starts, and the coordinator they all meet at. A map: each part has a document
 of its own, linked below. The source tree, file by file, is in
 [AGENTS.md](../../AGENTS.md#architecture).
 
-## Two threads
+## The threads
 
 GTK owns the main thread. A tokio runtime beside it carries BLE, AAP and every D-Bus
 call. GTK types are `!Send`, so no widget can travel to a tokio task, and none may be
@@ -14,6 +14,11 @@ touched from one: the two sides meet over channels only.
 
 What comes to the main thread is consumed there with `glib::spawn_future_local`. What
 goes the other way is spawned on the runtime.
+
+**A third thread,** PipeWire's, runs while the microphone's switch is on, and until the
+default input is put back after: its loop blocks, and its objects never leave the thread
+that made them. `mic::Mic` starts it, and meets it over channels
+([mic.md](mic.md#the-pipewire-side)).
 
 ## The channels
 
@@ -59,14 +64,10 @@ goes the other way is spawned on the runtime.
 `main()` spawns `quit_on_signals` on every launch, outside that set: it turns SIGTERM and
 SIGINT into a quit, as the menu's.
 
-**A third thread,** PipeWire's, runs while the microphone's switch is on: its loop blocks,
-and its objects never leave the thread that made them. `mic::Mic` starts it, and meets it
-over channels ([mic.md](mic.md#the-pipewire-side)).
-
 The window's render loops run on the main context: [ui.md](ui.md#updates-come-from-snapshots).
 
 At the quit, `main.rs` puts back a lowered volume, for `volume::RESTORE_LIMIT` at most
-([volume.md](volume.md)), stops the microphone's stream and puts the default input back,
+([volume.md](volume.md)), stops the microphone's stream, sets back a card switch under way and puts the default input back,
 for `mic::QUIT_LIMIT` at most ([mic.md](mic.md)), and saves the readings once more,
 without a bound ([readings.md](readings.md)). All three run before the runtime is dropped. A second SIGTERM or
 SIGINT exits at once.

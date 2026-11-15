@@ -46,7 +46,7 @@ Each rule below is short; the link after it goes to the document that says why, 
 behind it.
 How the parts fit together: [docs/app/architecture.md](docs/app/architecture.md).
 
-**Threading.** [Why](docs/app/architecture.md#two-threads)
+**Threading.** [Why](docs/app/architecture.md#the-threads)
 - GTK owns the main thread, tokio carries BLE/AAP/D-Bus; GTK types are `!Send`, so the two meet over
   channels (`watch`, `async-channel`, `oneshot`), consumed with `glib::spawn_future_local`.
 - Never touch a widget from a tokio task.
@@ -329,10 +329,16 @@ notification was Conversation Awareness's speech level `09` (#150).
   before is put back as it goes - unless the user chose another meanwhile, which wins until the
   source has gone and come back. [Why](docs/app/mic.md#the-default-input)
 - The card switch only after a stop the app sent, never on its own timer or for a link that went:
-  the card's `Profile` off and back on PipeWire's thread, each step within `SWITCH_STEP_LIMIT`, the
-  card set back if one fails; then a new A2DP transport, then only the players the switch paused
-  played again with an explicit `Play`, up to `mic::SWITCH_TRIES` switches.
+  the card's `Profile` off and back on PipeWire's thread, each step within
+  `mic::SWITCH_STEP_LIMIT`, the card set back if one fails and at the quit; then a new A2DP
+  transport, then only the players the switch paused played again with an explicit `Play`, and
+  only while the pair has an A2DP transport, up to `mic::SWITCH_TRIES` switches.
   [Why](docs/app/mic.md#the-card-switch)
+- A reply awaited from PipeWire's thread is bounded, or failed by the thread as it ends: a
+  `pw::channel` send never fails once the thread is gone. [Why](docs/app/mic.md#replies-from-the-thread)
+- PipeWire's thread runs while the switch is on, and with it off until the default input is put
+  back, started again on `bluez::Backoff`; with the switch off, the row stays usable.
+  [Why](docs/app/mic.md#the-pipewire-side)
 - FFmpeg's own `aac` decoder from the system's libavcodec, loaded at runtime, never linked, never
   `libfdk_aac`: a soname from `decoder::NEWEST_MAJOR` down to `decoder::OLDEST_MAJOR`, its version
   checked; only the first fields of `AVCodecParameters` and `AVFrame` are touched.
@@ -466,14 +472,16 @@ notification was Conversation Awareness's speech level `09` (#150).
   link going or the quit, connecting when one needs it and again after a connection
   failed, so it has no retry loop to back off; `media::Media` likewise calls only for a
   pod leaving an ear or coming back. `mic::Mic` starts PipeWire's thread again on
-  `bluez::Backoff` when it ends while the switch is on.
+  `bluez::Backoff` when it ends while the switch is on, or while the default input is still to
+  be put back.
 - A harness build must behave like a plain one unless the fake world's environment asks
   otherwise (`CYMBA_AAP_SOCKET_DIR`, `CYMBA_HARNESS_AUTOMATION=1`, set only by
   `scripts/fake-world.sh`): `make test` and `make fake-world` leave it at
   `target/debug/cymba`, where it meets real AirPods and the user's session. Nothing in
   the harness writes to the app's real data or config directory, or LinuxPods' ones, and
   its fake media player goes only on a private session bus: `fakepods` refuses
-  `/run/user/<uid>/bus`. The fake world points the app at an empty directory for PipeWire,
+  `/run/user/<uid>/bus`. The fake world points the app at a socket path in an empty directory
+  for PipeWire (an absolute `PIPEWIRE_REMOTE`, which has no fallback),
   and the PipeWire test runs a daemon of its own: neither reaches the user's PipeWire.
 
 **UI.** [Why](docs/app/ui.md)
