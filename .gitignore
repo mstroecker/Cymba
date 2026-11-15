@@ -29,3 +29,6 @@ Thumbs.db
 
 # Local security audit output
 /security-audit/
+
+# Hardware captures: addresses, names, recordings
+/captures/

@@ -419,6 +419,14 @@ impl Client {
         self.send_packet(&packet, "rename").await
     }
 
+    /// Sends `packet` as given, unchecked: for a probe to send a packet the
+    /// app has no command for, as `mic_probe` sends the microphone's start and
+    /// stop.
+    #[doc(hidden)]
+    pub async fn send_unchecked(&self, packet: &[u8]) -> Result<()> {
+        self.send_packet(packet, "packet").await
+    }
+
     /// Sends a packet, verifying the whole thing was written.
     async fn send_packet(&self, packet: &[u8], kind: &str) -> Result<()> {
         let socket = self.socket.as_ref().context("not connected")?;
