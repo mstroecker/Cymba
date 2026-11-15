@@ -84,33 +84,50 @@ microphone" takes it, as a phone call would on the pods. The default input is Pi
 `default.configured.audio.source`, the one GNOME's Sound panel sets
 ([protocol/linux/desktop.md](../protocol/linux/desktop.md#pipewire)).
 
-- **Made the source** as the source comes up, the one before remembered.
+- **Made the source** as the source comes up, the one before remembered: the input the
+  default input names then, or the last other one it reads before it reads the source.
+  WirePlumber sets the key in a metadata it has just made only after the metadata is
+  there to read ([protocol/linux/desktop.md](../protocol/linux/desktop.md#pipewire)), so
+  what reads before the source can be WirePlumber's own setting.
 - **Put back** as the source goes - the pair detached, the switch off, the quit - to the
-  one before, or cleared if there was none.
-- **The user's change wins.** Once the default input has read the source, another one is
-  the user's choice: nothing is put back, and the source is not made the default input
-  again until it has gone and come back, as `volume` leaves a volume the user moved.
-- **A default naming the source** when it comes up - a quit that did not put it back - is
-  not remembered as the one before.
+  one before.
+- **Never cleared.** A key cleared empties WirePlumber's history of chosen inputs
+  ([protocol/linux/desktop.md](../protocol/linux/desktop.md#pipewire)). With none before,
+  the default input is left naming the source as it goes: WirePlumber, finding no node of
+  that name, takes the newest input in that history that is there, or its own pick with
+  none, as it would with the key unset.
+- **The user's change wins.** Once the default input has read the source, another input
+  is the user's choice: nothing is put back, and the source is not made the default
+  input again until it has gone and come back, as `volume` leaves a volume the user
+  moved.
+- **None is nobody's choice.** A default input read as none is the `default` metadata as
+  WirePlumber makes it, at its start or restart, before it sets the key
+  ([protocol/linux/desktop.md](../protocol/linux/desktop.md#pipewire)). It is never the
+  user's choice and ends no put back. Read after the source, it is as if the source had
+  not been read yet: the next other input read is the one before, not the user's choice.
+  A user who chooses an input right then has it put back as the one before.
+- **A default naming the source** when it comes up - a quit that did not put it back, or a
+  put back with none before - is not remembered as the one before.
 - **Nothing is decided until the default input reads.** It is read from the `default`
   metadata, which WirePlumber makes, and takes away as it goes
   ([protocol/linux/desktop.md](../protocol/linux/desktop.md#pipewire)): a thread that
   connects before WirePlumber has made it, or one whose metadata went, reads no default
   input. That is neither the one before nor the user's choice: the source is made the
   default input, and a put back asked or given up, only once the metadata is there and
-  read. A put back not read back when the metadata goes may not have reached it, and is
-  asked again as for a thread that ended.
+  read. A put back not read back when the metadata goes - its sync answered or not - may
+  not have reached it, or may be undone as WirePlumber sets the key again, and is asked
+  again as for a thread that ended.
 - **The one before is kept until the default input reads it put back,** whatever comes
   between. A sync answered says PipeWire has the put back, not that the session manager
   has told it ([protocol/linux/desktop.md](../protocol/linux/desktop.md#pipewire)), so
   until then:
   - **Made the source again** - the switch off and on, the pair gone and back - with
-    the default input still reading the source: the one before is the put back's, not
-    none. The put back read back after, and the source after it, are not the user's
+    the default input still reading the source, or none: the one before is the put
+    back's. The put back read back after, and the source after it, are not the user's
     choice.
-    - **A put back that may be lost** - its thread ended, or taken to hang
+  - **A put back that may be lost** - its thread ended, or taken to hang
     ([The PipeWire side](#the-pipewire-side)), or the metadata gone - is asked again, of
-    the next thread, while the default input reads the source with the source down. Read
+    the next thread, once the default input reads the source with the source down. Read
     back as put back, by the next thread too, it is done, and not the user's choice.
   - **Another input read** is the user's choice, and ends it.
 
@@ -210,11 +227,18 @@ from it on a tokio channel (`mic::AudioEvent`).
   metadata's properties read. The default input read then is the one the task starts from;
   with no `default` metadata yet, none is read ([The default input](#the-default-input)).
   A metadata that comes later is bound, and its default input told once a round trip
-  after the bind is done; one that goes is told as not read.
+  after the bind is done; one that goes is told as not read. Each `default` metadata
+  announced is bound in place of the one before: with two at once, as two session
+  managers would make, and the newer one going, the older is not bound again, and the
+  default input reads as not known until another is announced - nothing is decided
+  meanwhile.
 - **Ended** when PipeWire goes or cannot be reached: the task starts it again on
   `bluez::Backoff`, as the tasks on the system bus do, while the switch is on - and,
   with the switch off, while the source is still the default input, so the one before
-  can be put back. With the switch off the row stays usable meanwhile.
+  can be put back. With the switch off the row stays usable meanwhile. A thread that
+  was ready and ran `bluez::RETRY_MAX` or longer starts the waits from the shortest
+  again; one that ends or is taken to hang sooner, ready or not, makes the next wait
+  longer, so a thread that fails soon after it is ready is not started again in a loop.
 - **Not ended before a put back has reached PipeWire:** the thread is asked to end only
   once it has answered a sync (`AudioRequest::Sync`) asked right after the put back,
   which answers after every request before it
@@ -226,10 +250,13 @@ from it on a tokio channel (`mic::AudioEvent`).
   and done with as one that ended: asked to quit, should it ever serve its queue, no
   longer heard, and a new one started on `bluez::Backoff`, which asks the put back
   again. The switch off and on meanwhile starts the new one, once the backoff's wait is
-  over. A thread cannot be killed: a source the hung one had up stays on PipeWire, beside
-  the new thread's, both named `cymba.airpods_mic`. PipeWire takes two nodes of one name
-  ([protocol/linux/desktop.md](../protocol/linux/desktop.md#pipewire)); which of the two
-  a default input naming it picks is not known.
+  over. Serving its quit, a thread sets back a card switch under way and starts no other,
+  and ends once a sync after the set back is answered, or `mic::SWITCH_STEP_LIMIT`
+  after the quit: a card switch it served before is not left off. A thread cannot be
+  killed: a source the hung one had up stays on PipeWire, beside the new thread's, both
+  named `cymba.airpods_mic`. PipeWire takes two nodes of one name; which of the two a
+  default input naming it picks is open
+  ([protocol/linux/desktop.md](../protocol/linux/desktop.md#open-questions)).
 
 ### Replies from the thread
 
@@ -241,7 +268,9 @@ never holds up the task. At most `MAX_QUEUED_AUDIO` audio packets wait in it
 dropped, and counted into the figure the stop logs ([The audio](#the-audio)), so a thread
 that hangs does not grow the queue without end. No other request is ever dropped for room:
 the others come only as the task asks them, and a thread taken to hang
-([The PipeWire side](#the-pipewire-side)) is asked nothing after its quit.
+([The PipeWire side](#the-pipewire-side)) is asked nothing after its quit but the card
+switches a switch under way asks, at most `mic::SWITCH_TRIES`, which it refuses once it
+has served its quit.
 Not a `pw::channel`
 ([protocol/linux/desktop.md](../protocol/linux/desktop.md#pipewire)), whose send would wait
 for every decode queued before it.
@@ -311,12 +340,18 @@ On a Pro 3, with the switch on and music playing over A2DP:
 - If WirePlumber tells the put back after the sync's `done`
   ([protocol/linux/desktop.md](../protocol/linux/desktop.md#open-questions)): the thread
   quitting right after still leaves the input put back.
+- `systemctl --user restart wireplumber` alone, while the source is the default input
+  with a USB or laptop input chosen before; then the switch off.
+  The log then says the default input was put back to the input before - taken for the
+  user's choice, it would not be put back - and
+  `pw-metadata 0 default.configured.audio.source` names that input.
 - `systemctl --user restart pipewire wireplumber` while recording, and again during a
   card switch: the source back once PipeWire is, the stream stopped, the card not left
   off.
 - `kill -9` of the app while the source is the default input: what WirePlumber takes as
-  the default input then, with the source gone, and what the user sees once the next run
-  clears the default it finds naming the source ([The default input](#the-default-input)).
+  the default input then, with the source gone - the input before, the newest in its
+  history that is there - and after the next run, which leaves the default naming the
+  source as it found it ([The default input](#the-default-input)).
 - A call in a browser while music plays over A2DP, with the switch on: whether a pod
   taken out of an ear pauses the call's player or the music
   ([media-pause.md](media-pause.md#calls-are-left-alone)), and whether the volume is

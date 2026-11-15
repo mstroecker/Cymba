@@ -11,7 +11,8 @@ is from its specification, UPower also from its source, GLib, GNOME Shell,
 gnome-session, logind, Flatpak and the bus proxy from their documentation and source, and the
 key path is only as understood, not traced. PipeWire's input and default input ran
 against a PipeWire daemon of a test's own; the order of a client's requests is from
-PipeWire's headers.
+PipeWire's headers; what WirePlumber does with the default input, and how inputs are
+named, is from WirePlumber's, PipeWire's and udev's source, not run.
 
 The app acts on these in `volume`, `media`, `mic`, `notify`, `nearby`, `presence` and
 `ui::connect`: [app/volume.md](../../app/volume.md), [app/mic.md](../../app/mic.md),
@@ -62,15 +63,41 @@ PipeWire 1.6.10 against a daemon of a test's own, with no session manager, on
   follows when picking the input it uses (WirePlumber's documentation; not run here).
 - **With WirePlumber, the `default` metadata is WirePlumber's own,** kept in its process
   and exported to the server, which hands every client's change on to it (WirePlumber
-  0.5.19, `src/scripts/metadata.lua` and `lib/wp/metadata.c`, `pw_core_export`;
+  0.5.18, `src/scripts/metadata.lua` and `lib/wp/metadata.c`, `pw_core_export`;
   PipeWire 1.6.0, `src/modules/module-metadata/metadata.c`, `metadata_set_property`).
   So the metadata is there only while WirePlumber is: a client that connects before
-  WirePlumber has made it finds none, and it goes with WirePlumber. As it makes it,
-  WirePlumber sets each `default.configured.*` key from its state file (WirePlumber
-  0.5.19, `src/scripts/default-nodes/state-default-nodes.lua`). An exported metadata
+  WirePlumber has made it finds none, and it goes with WirePlumber. An exported metadata
   that came after a client connected, from another client, was there for that client
   to bind and change, its changes told back, and it went with the client that exported
   it (run below).
+- **WirePlumber makes the metadata empty, and sets the keys after.** Each
+  `default.configured.*` key it has a value for in its state file is set from a hook on
+  its own `metadata-added` event, which comes as its object manager takes the metadata in
+  (WirePlumber 0.5.18, `src/scripts/default-nodes/state-default-nodes.lua`,
+  `metadata_added_hook`; `modules/module-standard-event-source.c`, `on_object_added`). So
+  a client that binds the metadata as it is announced, at WirePlumber's start or
+  restart, can read the default input as none first, and the value from the state file
+  after.
+- **WirePlumber keeps every input set as the default as a history,** newest first, in its
+  state file: a value set goes to the top, or moves there. **A key cleared empties that
+  history** (WirePlumber 0.5.18, `state-default-nodes.lua`,
+  `store_configured_default_nodes_hook` and `updateStored`).
+- **WirePlumber's input is the configured one where a node has that name;** else the
+  newest one in the history that has a node; else its own pick by priority (WirePlumber
+  0.5.18, `src/scripts/default-nodes/find-selected-default-node.lua`,
+  `state-default-nodes.lua`'s `find_stored_default_node_hook`, and
+  `find-best-default-node.lua`). A key naming a node that is not there is passed over,
+  as an unset one is.
+- **An input's node name can carry a USB device's serial number or a Bluetooth
+  device's address.** WirePlumber names an ALSA input
+  `alsa_input.<device name>.<profile>`, its device name udev's `ACP_NAME` where the card
+  has one, else udev's `ID_ID`: for a USB device its bus, `ID_SERIAL` and interface
+  number, `ID_SERIAL` being its vendor, model and serial number. A Bluetooth input is
+  `bluez_input.<address>.<id>`, the address's colons made underscores (WirePlumber
+  0.5.18, `src/scripts/monitors/alsa.lua`, `prepareDevice`, and
+  `src/scripts/lib/monitor-utils.lua`, `get_bluez_node_name`; PipeWire 1.6.10,
+  `spa/plugins/alsa/alsa-udev.c`, `device.bus-id` from `ID_ID`; systemd 262,
+  `rules.d/78-sound-card.rules` and `src/udev/udev-builtin-usb_id.c`).
 - **Two nodes may have one `node.name`:** two clients' streams given the same name were
   both listed with it (run below).
 - **A Bluetooth device's card is a `bluez5` device object** with `api.bluez5.address`
@@ -308,6 +335,11 @@ state unknown and `WarningLevel` none, and `gsd-power` sent nothing.
 
 ## Open questions
 
+- Two nodes of one `node.name` ([PipeWire](#pipewire)): which of them a default input
+  naming it picks. WirePlumber takes the first node of that name in its list of nodes
+  (WirePlumber 0.5.18, `find-selected-default-node.lua`); which one comes first there,
+  and which one an app recording from the default input then gets, has not been read or
+  run.
 - With WirePlumber, whether a change to the `default` metadata's
   `default.configured.audio.source`, set just before a core `sync`, is told back to the
   client before that sync's `done` or after it ([PipeWire](#pipewire)). Not run here:

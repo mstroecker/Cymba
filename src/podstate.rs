@@ -1164,7 +1164,7 @@ impl Coordinator {
 
     /// [`Coordinator::new`] with the keystore given, so tests use their own
     /// directory rather than the user's.
-    fn with_keystore(keystore: Option<Keystore>) -> Arc<Self> {
+    pub(crate) fn with_keystore(keystore: Option<Keystore>) -> Arc<Self> {
         Arc::new(Self::from_keystore(keystore))
     }
 

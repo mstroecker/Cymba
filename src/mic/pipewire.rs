@@ -295,6 +295,13 @@ struct State {
     ready: bool,
     /// The default input as last read.
     configured: Option<String>,
+    /// Asked to quit: no card switch is started any more.
+    quitting: bool,
+    /// The sync asked after a switch was set back for the quit: the loop
+    /// quits once it is answered, or at `quit_by`.
+    quit_sync: Option<i32>,
+    /// When the loop quits at the latest once asked to.
+    quit_by: Option<std::time::Instant>,
 }
 
 impl State {
@@ -337,6 +344,7 @@ fn serve(
     let second_sync = Rc::new(std::cell::Cell::new(None));
     let _core_listener = {
         let quit = main_loop.downgrade();
+        let quit_done = main_loop.downgrade();
         let (state, events, core_weak) = (state.clone(), events.clone(), core.downgrade());
         let (first, second) = (first_sync.clone(), second_sync.clone());
         core.add_listener_local()
@@ -355,7 +363,11 @@ fn serve(
                 // Every global announced, then every property of the
                 // metadata bound meanwhile: ready. The metadata's
                 // properties read, whenever it came: told once ready.
-                if state.borrow().metadata_sync == Some(seq.seq()) {
+                if state.borrow().quit_sync == Some(seq.seq()) {
+                    if let Some(main_loop) = quit_done.upgrade() {
+                        main_loop.quit();
+                    }
+                } else if state.borrow().metadata_sync == Some(seq.seq()) {
                     let mut state = state.borrow_mut();
                     state.metadata_sync = None;
                     state.metadata_read = true;
@@ -429,9 +441,20 @@ fn serve(
 
     // A switch that takes too long is given up, and the card set back:
     // looked at every so often, as a timer cannot be armed from a request.
+    // So is a quit whose sync is not answered.
     let timer = {
         let state = state.clone();
-        main_loop.loop_().add_timer(move |_| give_up_switch(&state))
+        let quit = main_loop.downgrade();
+        main_loop.loop_().add_timer(move |_| {
+            give_up_switch(&state);
+            let due = state
+                .borrow()
+                .quit_by
+                .is_some_and(|by| std::time::Instant::now() >= by);
+            if due && let Some(main_loop) = quit.upgrade() {
+                main_loop.quit();
+            }
+        })
     };
     timer
         .update_timer(Some(SWITCH_CHECK), Some(SWITCH_CHECK))
@@ -445,9 +468,9 @@ fn serve(
         let serve_one = move |request| match request {
             AudioRequest::Source(up) => set_source(up, &state, &ring, &core, &events),
             AudioRequest::Audio(packet) => decode(&packet, &state, &ring),
-            AudioRequest::SetDefault(name) => set_default(name.as_deref(), &state),
+            AudioRequest::SetDefault(name) => set_default(&name, &state),
             AudioRequest::SwitchCard { mac, done } => start_switch(mac, done, &state),
-            AudioRequest::SetBackCard => set_back_switch(&state),
+            AudioRequest::SetBackCard => set_back_switch(&state, "the app quits"),
             AudioRequest::Sync(done) => match core.sync(0) {
                 Ok(seq) => PENDING_SYNCS.with(|p| {
                     p.borrow_mut().insert(seq.seq(), done);
@@ -455,6 +478,20 @@ fn serve(
                 Err(_) => drop(done),
             },
             AudioRequest::Quit => {
+                // A switch under way is set back, and the loop quits once
+                // PipeWire has that: the card is never left off by a thread
+                // that served a switch and then its quit.
+                state.borrow_mut().quitting = true;
+                let switching = state.borrow().switch.is_some();
+                if switching {
+                    set_back_switch(&state, "PipeWire's thread was asked to end");
+                    if let Ok(seq) = core.sync(0) {
+                        let mut state = state.borrow_mut();
+                        state.quit_sync = Some(seq.seq());
+                        state.quit_by = Some(std::time::Instant::now() + SWITCH_STEP_LIMIT);
+                        return;
+                    }
+                }
                 if let Some(main_loop) = quit.upgrade() {
                     main_loop.quit();
                 }
@@ -677,6 +714,10 @@ fn set_profile(card: &Card, index: i32) -> Result<()> {
 /// Begins switching the card of `mac` off and back.
 fn start_switch(mac: Address, done: oneshot::Sender<Result<()>>, state: &Rc<RefCell<State>>) {
     let mut state = state.borrow_mut();
+    if state.quitting {
+        let _ = done.send(Err(anyhow::anyhow!("PipeWire's thread is ending")));
+        return;
+    }
     if state.switch.is_some() {
         let _ = done.send(Err(anyhow::anyhow!("a card switch is under way already")));
         return;
@@ -772,8 +813,9 @@ fn give_up_switch(state: &Rc<RefCell<State>>) {
     )));
 }
 
-/// Sets the card of a switch under way back, and fails the switch.
-fn set_back_switch(state: &Rc<RefCell<State>>) {
+/// Sets the card of a switch under way back, and fails the switch, saying
+/// `why`.
+fn set_back_switch(state: &Rc<RefCell<State>>, why: &str) {
     let mut state = state.borrow_mut();
     let Some(switch) = state.switch.take() else {
         return;
@@ -785,7 +827,7 @@ fn set_back_switch(state: &Rc<RefCell<State>>) {
     }
     let _ = switch
         .done
-        .send(Err(anyhow::anyhow!("the card was set back for the quit")));
+        .send(Err(anyhow::anyhow!("the card was set back: {why}")));
 }
 
 /// Puts the source up, or takes it down.
@@ -959,25 +1001,20 @@ fn decode(packet: &[u8], state: &Rc<RefCell<State>>, ring: &Rc<RefCell<Ring>>) {
     ring.borrow_mut().push(&samples);
 }
 
-/// Sets the default input to the node `name`, or clears it.
-fn set_default(name: Option<&str>, state: &Rc<RefCell<State>>) {
+/// Sets the default input to the node `name`.
+fn set_default(name: &str, state: &Rc<RefCell<State>>) {
     let state = state.borrow();
     let Some(BoundMetadata { metadata, .. }) = &state.metadata else {
         tracing::warn!("PipeWire has no default metadata: the default input stays as it is");
         return;
     };
-    match name {
-        Some(name) => {
-            let value = serde_json::json!({ "name": name }).to_string();
-            metadata.set_property(
-                pw::sys::PW_ID_CORE,
-                DEFAULT_SOURCE_KEY,
-                Some("Spa:String:JSON"),
-                Some(&value),
-            );
-        }
-        None => metadata.set_property(pw::sys::PW_ID_CORE, DEFAULT_SOURCE_KEY, None, None),
-    }
+    let value = serde_json::json!({ "name": name }).to_string();
+    metadata.set_property(
+        pw::sys::PW_ID_CORE,
+        DEFAULT_SOURCE_KEY,
+        Some("Spa:String:JSON"),
+        Some(&value),
+    );
 }
 
 #[cfg(test)]
@@ -1014,6 +1051,9 @@ context.objects = [
       args = { factory.name = support.node.driver node.name = Dummy-Driver priority.driver = 20000 } }
 ]
 "#;
+
+    /// An input's node name, for the default input to name.
+    const OTHER_INPUT: &str = "cymba-test-input";
 
     /// The `default` metadata in [`DAEMON_CONF`], the daemon's own.
     const DAEMON_METADATA: &str = "    { factory = metadata args = { metadata.name = default } }\n";
@@ -1165,7 +1205,7 @@ context.objects = [
     /// source is recorded from while a recorder is linked to it, and no
     /// longer once it goes - where this PipeWire's ports can be linked
     /// without a session manager, which on CI they must be; the default
-    /// input set to the source and cleared, each told back; a switch of a
+    /// input set to the source and then to another input, each told back; a switch of a
     /// card PipeWire does not have fails; asked to quit, the side ends, a
     /// sync asked right after fails rather than waiting forever, and once
     /// the side has said it is gone, nothing more is taken.
@@ -1237,13 +1277,16 @@ context.objects = [
                 }
             }
 
-            assert!(side.ask(AudioRequest::SetDefault(Some(NODE_NAME.into()))));
+            assert!(side.ask(AudioRequest::SetDefault(NODE_NAME.into())));
             assert_eq!(
                 next(&mut events).await,
                 AudioEvent::Default(Some(Some(NODE_NAME.into())))
             );
-            assert!(side.ask(AudioRequest::SetDefault(None)));
-            assert_eq!(next(&mut events).await, AudioEvent::Default(Some(None)));
+            assert!(side.ask(AudioRequest::SetDefault(OTHER_INPUT.into())));
+            assert_eq!(
+                next(&mut events).await,
+                AudioEvent::Default(Some(Some(OTHER_INPUT.into())))
+            );
 
             let (done, switched) = oneshot::channel();
             let mac = Address::new([0x02, 0, 0, 0, 0, 1]);
@@ -1383,7 +1426,7 @@ context.objects = [
 
             let metadata = ClientMetadata::make(daemon.socket());
             assert_eq!(next(&mut events).await, AudioEvent::Default(Some(None)));
-            assert!(side.ask(AudioRequest::SetDefault(Some(NODE_NAME.into()))));
+            assert!(side.ask(AudioRequest::SetDefault(NODE_NAME.into())));
             assert_eq!(
                 next(&mut events).await,
                 AudioEvent::Default(Some(Some(NODE_NAME.into())))
@@ -1450,7 +1493,7 @@ context.objects = [
             assert!(side.ask(AudioRequest::Audio(vec![0; 4])));
         }
         assert!(!side.ask(AudioRequest::Audio(vec![0; 4])));
-        assert!(side.ask(AudioRequest::SetDefault(None)));
+        assert!(side.ask(AudioRequest::SetDefault(NODE_NAME.into())));
         assert!(side.ask(AudioRequest::Source(false)));
         let taken = lock(&shared).as_mut().unwrap().take();
         assert_eq!(taken.len(), 18);

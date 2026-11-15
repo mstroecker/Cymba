@@ -19,9 +19,10 @@ No log, probe or example prints key bytes or serial numbers.
 
 Any packet with either opcode is cut short, whether it parses or not.
 
-- **No PipeWire node's name but the microphone's source's own:** a USB input's node name
-  can carry its serial number, and a Bluetooth input's carries its address. The default
-  input remembered and put back is logged as "the input before" or none
+- **No PipeWire node's name but the microphone's source's own:** an input's node name can
+  carry a USB device's serial number or a Bluetooth device's address
+  ([protocol/linux/desktop.md](../protocol/linux/desktop.md#pipewire)). The default input
+  remembered and put back is logged as "the input before"
   ([mic.md](mic.md#the-default-input)), and a Bluetooth card PipeWire has is not named in
   a log by its address unless it is the pair's.
 
