@@ -943,6 +943,8 @@ impl Mic {
                     "The default input is now the microphone's source, in place of {}",
                     self.default.as_deref().unwrap_or("none")
                 );
+                // A put back still unanswered is over: the source again.
+                self.put_back = None;
                 side.ask(AudioRequest::SetDefault(Some(NODE_NAME.into())));
             }
             DefaultChange::PutBack(before) => {
