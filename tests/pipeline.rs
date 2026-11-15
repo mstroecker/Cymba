@@ -4596,7 +4596,7 @@ async fn offered_with(
     let mut offering = fixture.start_offering(&app, switch_reply, sync).await;
     let side = offering.side().await;
     side.send(AudioEvent::Ready {
-        default: Some(LAPTOP_MIC.into()),
+        default: Some(Some(LAPTOP_MIC.into())),
     })
     .unwrap();
     app.attach(PAIR).await;
@@ -4609,7 +4609,7 @@ async fn offered_with(
         offering.next().await,
         AudioRequest::SetDefault(Some(name)) if name == mic::NODE_NAME
     ));
-    side.send(AudioEvent::Default(Some(mic::NODE_NAME.into())))
+    side.send(AudioEvent::Default(Some(Some(mic::NODE_NAME.into()))))
         .unwrap();
     (fixture, app, offering, side)
 }
@@ -4679,7 +4679,7 @@ async fn a_recording_runs_the_microphone_around_conversation_awareness() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_users_default_input_wins() {
     let (_fixture, _app, mut offering, side) = offered().await;
-    side.send(AudioEvent::Default(Some("usb_headset".into())))
+    side.send(AudioEvent::Default(Some(Some("usb_headset".into()))))
         .unwrap();
     assert!(offering.settled().await);
     offering.switch.send_replace(false);
@@ -4731,7 +4731,7 @@ async fn an_audio_side_gone_after_its_quit_is_not_heard() {
     );
     new_side
         .send(AudioEvent::Ready {
-            default: Some(LAPTOP_MIC.into()),
+            default: Some(Some(LAPTOP_MIC.into())),
         })
         .unwrap();
     assert!(matches!(offering.next().await, AudioRequest::Source(true)));
@@ -4765,7 +4765,7 @@ async fn the_default_input_goes_back_after_pipewire_went() {
     let side = offering.side().await;
     // PipeWire back, the configured default still naming the source.
     side.send(AudioEvent::Ready {
-        default: Some(mic::NODE_NAME.into()),
+        default: Some(Some(mic::NODE_NAME.into())),
     })
     .unwrap();
     assert!(matches!(
@@ -4798,7 +4798,7 @@ async fn a_put_back_the_side_took_but_never_served_is_asked_again() {
         .unwrap();
     let side = offering.side().await;
     side.send(AudioEvent::Ready {
-        default: Some(mic::NODE_NAME.into()),
+        default: Some(Some(mic::NODE_NAME.into())),
     })
     .unwrap();
     assert!(matches!(
@@ -4810,11 +4810,13 @@ async fn a_put_back_the_side_took_but_never_served_is_asked_again() {
 }
 
 /// A put back whose sync the audio side never answers, as from a thread
-/// that hangs, is asked again once the sync's limit has passed, the default
-/// input still naming the source; the side is asked to quit only once a
-/// sync after a put back is answered (#209).
+/// that hangs, gives that side up once the sync's limit has passed: it is
+/// asked to quit, and a new side, started on the backoff, is asked the put
+/// back, the default input still naming the source, and then to quit once it
+/// has answered. The switch on again then starts a side that works: its
+/// source goes up and is made the default input (#209).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_put_back_never_confirmed_is_asked_again() {
+async fn a_side_that_never_confirms_a_put_back_is_replaced() {
     let (_fixture, _app, mut offering, _side) =
         offered_with(mic::SWITCH_REPLY_LIMIT, MIC_WAIT).await;
     offering.keep_next_sync();
@@ -4824,12 +4826,71 @@ async fn a_put_back_never_confirmed_is_asked_again() {
         offering.next().await,
         AudioRequest::SetDefault(Some(name)) if name == LAPTOP_MIC
     ));
+    assert!(matches!(offering.next().await, AudioRequest::Quit));
+
+    let side = offering.side().await;
+    side.send(AudioEvent::Ready {
+        default: Some(Some(mic::NODE_NAME.into())),
+    })
+    .unwrap();
     assert!(matches!(
         offering.next().await,
         AudioRequest::SetDefault(Some(name)) if name == LAPTOP_MIC
     ));
     assert!(matches!(offering.next().await, AudioRequest::Quit));
     assert!(offering.settled().await);
+
+    offering.switch.send_replace(true);
+    let side = offering.side().await;
+    side.send(AudioEvent::Ready {
+        default: Some(Some(LAPTOP_MIC.into())),
+    })
+    .unwrap();
+    assert!(matches!(offering.next().await, AudioRequest::Source(true)));
+    assert!(matches!(
+        offering.next().await,
+        AudioRequest::SetDefault(Some(name)) if name == mic::NODE_NAME
+    ));
+}
+
+/// PipeWire ready before its `default` metadata is there, as before
+/// WirePlumber makes it: the source goes up, but is made the default input
+/// only once the default input reads, and what it read then is put back
+/// with the switch off - not the none an unread default input would be
+/// (#209).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_default_input_waits_for_the_metadata() {
+    let fixture = Fixture::new(&[(PAIR, PRO_3, PAIR_LEVELS)]).await;
+    let mut app = fixture.start_app().await;
+    app.stop_listening().await;
+    let mut offering = fixture
+        .start_offering(&app, mic::SWITCH_REPLY_LIMIT, mic::SYNC_LIMIT)
+        .await;
+    let side = offering.side().await;
+    side.send(AudioEvent::Ready { default: None }).unwrap();
+    app.attach(PAIR).await;
+    assert!(matches!(offering.next().await, AudioRequest::Source(true)));
+    assert!(offering.settled().await);
+    assert!(
+        offering.asked.try_recv().is_err(),
+        "asked something with the default input unread"
+    );
+
+    side.send(AudioEvent::Default(Some(Some(LAPTOP_MIC.into()))))
+        .unwrap();
+    assert!(matches!(
+        offering.next().await,
+        AudioRequest::SetDefault(Some(name)) if name == mic::NODE_NAME
+    ));
+    side.send(AudioEvent::Default(Some(Some(mic::NODE_NAME.into()))))
+        .unwrap();
+    offering.switch.send_replace(false);
+    assert!(matches!(offering.next().await, AudioRequest::Source(false)));
+    assert!(matches!(
+        offering.next().await,
+        AudioRequest::SetDefault(Some(name)) if name == LAPTOP_MIC
+    ));
+    assert!(matches!(offering.next().await, AudioRequest::Quit));
 }
 
 /// A recording that starts the microphone, and ends: the stream stops, and
@@ -4860,7 +4921,7 @@ async fn a_side_ending_during_the_card_switch_leaves_the_microphone_usable() {
         .unwrap();
     let side = offering.side().await;
     side.send(AudioEvent::Ready {
-        default: Some(mic::NODE_NAME.into()),
+        default: Some(Some(mic::NODE_NAME.into())),
     })
     .unwrap();
     assert!(matches!(offering.next().await, AudioRequest::Source(true)));
