@@ -102,10 +102,11 @@ experimental. On, and with a pair connected, an "AirPods Microphone" input appea
 made the default; the one you had comes back once the pair disconnects, unless you chose
 another meanwhile. The microphone runs only while an app records, and the music plays on
 in stereo, where a Bluetooth headset profile would drop it to mono. Conversation
-Awareness is turned off while you record, and on again after. After each recording the
-music pauses for a moment and plays again: the app switches the AirPods' audio off and
-back, as one pod went silent after a recording otherwise. It needs PipeWire and FFmpeg's
-libavcodec on the system. Not yet tried on a pair (#209); see
+Awareness is turned off while you record, and on again after. After each recording the app
+switches the AirPods' audio off and back, as one pod went silent after a recording
+otherwise: the music pauses for a moment and plays again once the AirPods' audio is back;
+if it does not come back, the music stays paused rather than play from the laptop. It
+needs PipeWire and FFmpeg's libavcodec on the system. Not yet tried on a pair (#209); see
 [`docs/app/mic.md`](docs/app/mic.md).
 
 ### Linux integration

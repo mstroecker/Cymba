@@ -4346,13 +4346,38 @@ async fn a_connect_while_bluez_is_away_starts_nothing() {
 /// The audio side the microphone's task is handed in a test, in place of
 /// PipeWire: what the task asks goes to the test, but a sync, which it
 /// answers at once, as nothing it is asked is left to carry out.
-struct FakeAudio(mpsc::UnboundedSender<AudioRequest>);
+struct FakeAudio {
+    asked: mpsc::UnboundedSender<AudioRequest>,
+    /// A request to hold in `ask`, set by [`Offering::hold`].
+    hold: Arc<std::sync::Mutex<Option<Held>>>,
+}
+
+/// The next request `which` picks, held in `ask` - as a request may wait
+/// for the lock PipeWire's thread takes - until `release` is sent or
+/// dropped; `entered` says once it is held.
+struct Held {
+    which: fn(&AudioRequest) -> bool,
+    entered: oneshot::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
 
 impl AudioSide for FakeAudio {
     fn ask(&self, request: AudioRequest) -> bool {
+        let held = {
+            let mut hold = self.hold.lock().unwrap();
+            match &*hold {
+                Some(held) if (held.which)(&request) => hold.take(),
+                _ => None,
+            }
+        };
+        if let Some(held) = held {
+            let _ = held.entered.send(());
+            // Its worker's other tasks go on meanwhile.
+            tokio::task::block_in_place(|| held.release.recv().ok());
+        }
         match request {
             AudioRequest::Sync(done) => done.send(()).is_ok(),
-            other => self.0.send(other).is_ok(),
+            other => self.asked.send(other).is_ok(),
         }
     }
 }
@@ -4372,6 +4397,8 @@ struct Offering {
     asked: mpsc::UnboundedReceiver<AudioRequest>,
     /// Where each audio side the task starts tells it things.
     started: mpsc::UnboundedReceiver<mpsc::UnboundedSender<AudioEvent>>,
+    /// A request for the audio side to hold.
+    hold: Arc<std::sync::Mutex<Option<Held>>>,
     task: JoinHandle<()>,
 }
 
@@ -4423,6 +4450,22 @@ impl Offering {
         .expect("audio comes")
     }
 
+    /// Holds the next request `which` picks in the audio side's `ask`
+    /// ([`Held`]): what says it is held, and what lets it go.
+    fn hold(
+        &self,
+        which: fn(&AudioRequest) -> bool,
+    ) -> (oneshot::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (entered, held) = oneshot::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        *self.hold.lock().unwrap() = Some(Held {
+            which,
+            entered,
+            release: released,
+        });
+        (held, release)
+    }
+
     /// Whether the stream is idle, once the task has taken every event told
     /// so far.
     async fn settled(&self) -> bool {
@@ -4440,9 +4483,14 @@ impl Fixture {
         let (switch, on) = watch::channel(true);
         let (asked_tx, asked) = mpsc::unbounded_channel();
         let (started_tx, started) = mpsc::unbounded_channel();
+        let hold = Arc::new(std::sync::Mutex::new(None));
+        let held = hold.clone();
         let start: mic::StartAudio = Box::new(move |events| {
             let _ = started_tx.send(events);
-            Ok(Arc::new(FakeAudio(asked_tx.clone())))
+            Ok(Arc::new(FakeAudio {
+                asked: asked_tx.clone(),
+                hold: held.clone(),
+            }))
         });
         let bluez = self.bus.address().to_string();
         let players = session.address().to_string();
@@ -4464,6 +4512,7 @@ impl Fixture {
             control,
             asked,
             started,
+            hold,
             task: tokio::spawn(offering.run()),
         }
     }
@@ -4599,33 +4648,49 @@ async fn the_link_going_ends_the_stream() {
     assert!(!received.contains(&cymba::aap::mic::STOP.to_vec()));
 }
 
-/// An audio side ended with the switch off, which says it is gone only
-/// after, is not heard: the availability, unknown once the switch is off,
-/// is not touched again - never unavailable - and the switch on again
-/// starts a new side at once (#209).
+/// An audio side asked to quit, which says it is gone only after, is not
+/// heard, though the switch is on again by then: the availability is not
+/// made unavailable, and a new side is started at once and kept - its
+/// source goes up, and no other side is started (#209).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_audio_side_gone_after_the_switch_off_leaves_the_switch_usable() {
+async fn an_audio_side_gone_after_its_quit_is_not_heard() {
     let (_fixture, _app, mut offering, side) = offered().await;
+    let (held, release) = offering.hold(|r| matches!(r, AudioRequest::Quit));
     offering.switch.send_replace(false);
     assert!(matches!(offering.next().await, AudioRequest::Source(false)));
     assert!(matches!(offering.next().await, AudioRequest::SetDefault(_)));
+    timeout(TIMEOUT, held).await.unwrap().unwrap();
+    // What PipeWire's thread says as it ends, and the switch on again, both
+    // before the task is through with asking it to quit.
+    side.send(AudioEvent::Gone("the connection to PipeWire ended".into()))
+        .unwrap();
+    offering.switch.send_replace(true);
+    release.send(()).unwrap();
     assert!(matches!(offering.next().await, AudioRequest::Quit));
     assert!(offering.settled().await);
-    let mut availability = offering.control.availability();
-    assert_eq!(
-        *availability.borrow_and_update(),
-        mic::Availability::Unknown
+    let new_side = offering
+        .started
+        .try_recv()
+        .expect("a new side started at once");
+    assert_ne!(
+        *offering.control.availability().borrow(),
+        mic::Availability::Unavailable("the connection to PipeWire ended".into())
     );
-    // What PipeWire's thread says as it ends; the task has let go of it.
-    let _ = side.send(AudioEvent::Gone("the connection to PipeWire ended".into()));
+    new_side
+        .send(AudioEvent::Ready {
+            default: Some(LAPTOP_MIC.into()),
+        })
+        .unwrap();
+    assert!(matches!(offering.next().await, AudioRequest::Source(true)));
     assert!(offering.settled().await);
-    assert!(
-        !availability.has_changed().unwrap(),
-        "the availability changed: {:?}",
-        *availability.borrow()
+    assert_eq!(
+        *offering.control.availability().borrow(),
+        mic::Availability::Available
     );
-    offering.switch.send_replace(true);
-    offering.side().await;
+    assert!(
+        offering.started.try_recv().is_err(),
+        "another side was started"
+    );
 }
 
 /// PipeWire going while the source is the default input, and the switch
@@ -4747,4 +4812,39 @@ async fn a_quit_during_the_card_switch_sets_the_card_back() {
     assert!(matches!(offering.next().await, AudioRequest::Source(false)));
     timeout(TIMEOUT, quit).await.unwrap().unwrap();
     drop(unanswered);
+}
+
+/// The app quitting while the card switch is being asked for of the side:
+/// the card is set back only after that switch is asked, never before it,
+/// which would leave the card off (#209).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_quit_while_the_switch_is_asked_sets_the_card_back_after() {
+    let (_fixture, _app, mut offering, side) = offered().await;
+    let (held, release) = offering.hold(|r| matches!(r, AudioRequest::SwitchCard { .. }));
+    side.send(AudioEvent::Recording(true)).unwrap();
+    offering.audio().await;
+    side.send(AudioEvent::Recording(false)).unwrap();
+    timeout(TIMEOUT, held).await.unwrap().unwrap();
+    let control = offering.control.clone();
+    let mut quit = tokio::spawn(async move { control.shut_down().await });
+    // Long enough for a quit that does not wait for the switch's task to
+    // ask all it asks: the fake side takes each request, and answers a
+    // sync, at once.
+    const QUIT_ASKS: Duration = Duration::from_millis(300);
+    assert!(
+        timeout(QUIT_ASKS, &mut quit).await.is_err(),
+        "the quit did not wait for the switch being asked"
+    );
+    release.send(()).unwrap();
+    assert!(matches!(
+        offering.next().await,
+        AudioRequest::SwitchCard { mac, .. } if mac == PAIR
+    ));
+    assert!(matches!(offering.next().await, AudioRequest::SetBackCard));
+    assert!(matches!(
+        offering.next().await,
+        AudioRequest::SetDefault(Some(name)) if name == LAPTOP_MIC
+    ));
+    assert!(matches!(offering.next().await, AudioRequest::Source(false)));
+    timeout(TIMEOUT, quit).await.unwrap().unwrap();
 }
