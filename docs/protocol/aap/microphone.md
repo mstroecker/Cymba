@@ -6,8 +6,9 @@ come from LibrePods. Four runs on AirPods Pro 3 on 2026-11-15 (#211) confirmed t
 music playing over A2DP throughout. That AirPods Pro 2 (USB-C) behave the same is
 assumed, not checked.
 
-The app does not use the microphone yet (#209). The packets are sent by
-`examples/mic_probe.rs`.
+The packets are read in `src/aap/mic.rs`, and sent by `examples/mic_probe.rs`; what the
+app does with them, behind an experimental switch, is in [app/mic.md](../../app/mic.md)
+(#209).
 
 Byte offsets count from 0 at the first byte of the packet. Multi-byte numbers are
 little-endian.

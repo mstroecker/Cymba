@@ -29,6 +29,7 @@ src/
 ├── keystore.rs    # ENC_KEY and IRK per pair at ~/.local/share/cymba/keys.json (0600)
 ├── readings.rs    # Each pair's last BLE reading across a relaunch, in readings.json beside the keys
 ├── media.rs       # The media paused when a pod leaves an ear, played again once back (MPRIS)
+├── mic/           # The microphone over AAP as a PipeWire source: the stream, the default input, the card switch; FFmpeg's decoder; PipeWire's thread
 ├── migrate.rs     # LinuxPods' data and config directories, moved to Cymba's at startup
 ├── settings.rs    # Preferences' settings at ~/.config/cymba/settings.json
 ├── indicator.rs   # System tray via StatusNotifierItem (ksni)
@@ -49,6 +50,9 @@ How the parts fit together: [docs/app/architecture.md](docs/app/architecture.md)
 - GTK owns the main thread, tokio carries BLE/AAP/D-Bus; GTK types are `!Send`, so the two meet over
   channels (`watch`, `async-channel`, `oneshot`), consumed with `glib::spawn_future_local`.
 - Never touch a widget from a tokio task.
+- PipeWire's objects stay on PipeWire's thread (`mic::pipewire`), which runs its loop; `mic::Mic`
+  meets it over channels: a PipeWire channel there, a tokio one back.
+  [Why](docs/app/mic.md#the-pipewire-side)
 
 **State.** [Why](docs/app/state.md)
 - `Coordinator` merges AAP and BLE **per device**, keyed by the **real** MAC.
@@ -95,8 +99,12 @@ How the parts fit together: [docs/app/architecture.md](docs/app/architecture.md)
   await. [Why](docs/app/identification.md#resolved-addresses)
 - A pair with no IRK yet is identified by its ENC_KEY alone until its next AAP connection stores
   one. [Why](docs/app/identification.md#pairs-with-no-irk)
-- Speech-event and ear-event consumers are a std mutex each beside `inner`: taken under its write
-  lock to tell an event, alone to register, never across an await. [Why](docs/app/state.md#events)
+- Speech-event, ear-event and mic-event consumers are a std mutex each beside `inner`: taken under
+  its write lock to tell an event, alone to register, never across an await.
+  [Why](docs/app/state.md#events)
+- The microphone's audio goes to one consumer (`Coordinator::mic_audio`), a std mutex beside `inner`
+  taken alone, over a bounded channel: `try_send`, dropped and counted when full, never awaited by
+  the read loop. [Why](docs/app/mic.md#the-audio)
 - `Snapshot::attached` is attachment's: the pairs it has attached (connected, AirPods service),
   replaced whole after every attach and detach, emptied when it stops.
   [Why](docs/app/state.md#what-a-snapshot-shows)
@@ -306,6 +314,34 @@ notification was Conversation Awareness's speech level `09` (#150).
   first in its `select!`, the switch next; tests wait on `MediaControl::settled`.
   [Why](docs/app/media-pause.md#the-task)
 
+**The microphone over AAP.** [Why](docs/app/mic.md)
+- Experimental, off by default (`app.mic-over-aap`): it switches the pair's card off and back after
+  every stop, the workaround #212 is to replace. [Why](docs/app/mic.md)
+- The read loop routes an audio packet (`aap::mic::is_audio_packet`) before anything is logged or
+  decoded; no audio packet is ever logged. [Why](docs/app/logging.md#aap-packets)
+- Started only while something records from the source - its stream `Streaming` - and stopped
+  `mic::STOP_AFTER` after the last recording ends; never polled. Start and stop go through
+  `Coordinator::command` (`Command::Microphone`). [Why](docs/app/mic.md#when-the-microphone-runs)
+- Conversation Awareness off before the start only if the link reads it on, and on again after the
+  stream only while it still reads off, once it has read off; read on after that, it is the user's.
+  [Why](docs/app/mic.md#conversation-awareness)
+- The source is the default input (`default.configured.audio.source`) while it is up, and the one
+  before is put back as it goes - unless the user chose another meanwhile, which wins until the
+  source has gone and come back. [Why](docs/app/mic.md#the-default-input)
+- The card switch only after a stop the app sent, never on its own timer or for a link that went:
+  the card's `Profile` off and back on PipeWire's thread, each step within `SWITCH_STEP_LIMIT`, the
+  card set back if one fails; then a new A2DP transport, then only the players the switch paused
+  played again with an explicit `Play`, up to `mic::SWITCH_TRIES` switches.
+  [Why](docs/app/mic.md#the-card-switch)
+- FFmpeg's own `aac` decoder from the system's libavcodec, loaded at runtime, never linked, never
+  `libfdk_aac`: a soname from `decoder::NEWEST_MAJOR` down to `decoder::OLDEST_MAJOR`, its version
+  checked; only the first fields of `AVCodecParameters` and `AVFrame` are touched.
+  [Why](docs/app/mic.md#the-decoder)
+- Played at `aap::mic::SAMPLE_RATE`, the pace the frames came at, not the AudioSpecificConfig's.
+  [Why](docs/app/mic.md#the-audio)
+- Behind the default `mic` feature; `--no-default-features` builds without PipeWire's headers, and
+  the switch says so. [Why](docs/app/mic.md#building-without-it)
+
 **The nearby notification.** [Why](docs/app/nearby.md)
 - A return is a pair's first live advertisement after `nearby::QUIET` unheard, or never heard
   this run, by real MAC, on the wall clock; a restored reading gives its time alone, never a
@@ -371,10 +407,11 @@ notification was Conversation Awareness's speech level `09` (#150).
 ## Patterns
 
 - Keep protocol parsing pure and tested. `aap::battery`, `aap::conversation`, `aap::ear`,
-  `aap::info`, `aap::keys`, `aap::name`, `aap::noise`, `aap::message`, `ble::parser`, `ble::decrypt`, `ble::rpa` take bytes and
+  `aap::info`, `aap::keys`, `aap::mic`, `aap::name`, `aap::noise`, `aap::message`, `ble::parser`, `ble::decrypt`, `ble::rpa` take bytes and
   return values, and carry the bulk of the test suite; `noise::ModeState`,
   `ear::EarState`, `rpa::ResolvedAddresses`, `notify::Alerts`, `nearby::Returns`,
-  `volume::Ducking` and `media::EarPause` take the time as an argument for the same reason; `volume::a2dp_in`
+  `volume::Ducking`, `media::EarPause` and `mic::Stream` take the time as an argument for the same reason,
+  and `mic::DefaultInput` the default input as it reads; `volume::a2dp_in`
   and `volume::a2dp_active_in` read BlueZ's objects as values. `aap::decode` routes every packet by its header and opcode;
   each module's `is_*` and `parse_*` still check the header themselves, so they stay safe
   to call on their own.
@@ -428,30 +465,36 @@ notification was Conversation Awareness's speech level `09` (#150).
   calls BlueZ only for a speech level, a fade step, a look for a transport that went, a
   link going or the quit, connecting when one needs it and again after a connection
   failed, so it has no retry loop to back off; `media::Media` likewise calls only for a
-  pod leaving an ear or coming back.
+  pod leaving an ear or coming back. `mic::Mic` starts PipeWire's thread again on
+  `bluez::Backoff` when it ends while the switch is on.
 - A harness build must behave like a plain one unless the fake world's environment asks
   otherwise (`CYMBA_AAP_SOCKET_DIR`, `CYMBA_HARNESS_AUTOMATION=1`, set only by
-  `scripts/fake-world.sh`): `make test` and `make fake-world` leave it at
+  `make test` and `make fake-world` leave it at
   `target/debug/cymba`, where it meets real AirPods and the user's session. Nothing in
   the harness writes to the app's real data or config directory, or LinuxPods' ones, and
   its fake media player goes only on a private session bus: `fakepods` refuses
-  `/run/user/<uid>/bus`.
+  `/run/user/<uid>/bus`. The fake world points the app at an empty directory for PipeWire,
+  and the PipeWire test runs a daemon of its own: neither reaches the user's PipeWire.
 
 **UI.** [Why](docs/app/ui.md)
 - Widget updates arrive only from the snapshot stream, the scanning hint's from the scanner's
-  (`ScanControl::state`), and a connect under way from `connect::Connecting`, on the main context.
+  (`ScanControl::state`), a connect under way from `connect::Connecting`, and the microphone's row
+  from `mic::MicControl::availability`, on the main context.
   The one exception is a command or a connect that fails: a toast, an event, never a control's
   state. [Why](docs/app/ui.md#updates-come-from-snapshots)
 - The scanning hint shows while `ScanState::fallback` holds, undamped; its button asks
   `ScanControl::pause_discovery`, and the pause shows only once the scanner reports it, as the time
   it ends, never a countdown. [Why](docs/app/ui.md#the-scanning-hint)
 - A setting is not device state: its switch is bound to an app action (`app.battery-notifications`,
-  `app.nearby-notifications`, `app.pause-on-ear`) and shows that action's state. [Why](docs/app/ui.md#settings)
+  `app.nearby-notifications`, `app.pause-on-ear`, `app.mic-over-aap`) and shows that action's
+  state. The microphone's row says why it is not offered, and is insensitive then only while its
+  switch is off. [Why](docs/app/ui.md#settings)
 - Settings load (`settings::open`) before any action is created, so a switch saved off starts off.
   `settings::Saver` writes each change on tokio's blocking pool, never the main loop: the latest
   settings, whatever order the saves run in. A file that does not parse is set aside and the
   defaults used; a save that fails keeps the change in memory. `app.pause-on-ear` and
-  `app.nearby-notifications` are on by default, also for a file from before them. [Why](docs/app/ui.md#settings)
+  `app.nearby-notifications` are on by default, also for a file from before them;
+  `app.mic-over-aap` is off. [Why](docs/app/ui.md#settings)
 - Read a selection *before* mutating the widget: splicing a `StringList` makes `GtkDropDown` emit
   `selected-notify`, clobbering the user's choice. [Why](docs/app/ui.md#drop-downs)
 - Noise Control, Conversation Awareness and the Name row stay insensitive unless the device is on
@@ -520,7 +563,7 @@ A `Co-Authored-By:` trailer is fine.
 - [`l2cap.md`](docs/protocol/linux/l2cap.md) - a connect that returns with the channel still pending (#136)
 - [`bluez.md`](docs/protocol/linux/bluez.md) - discovery and what it blocks, advertisement monitors, adapters and restarts, providers, `MediaTransport1.Volume`, `Device1.Connect` and a pair another host holds, names
 - [`zbus.md`](docs/protocol/linux/zbus.md) - queues, the object server's dispatch, senders, order across subscriptions
-- [`desktop.md`](docs/protocol/linux/desktop.md) - PipeWire, MPRIS, a press on a pod, UPower, GApplication, where GLib sends a notification and its buttons, logind's session hints, Flatpak's bus proxy
+- [`desktop.md`](docs/protocol/linux/desktop.md) - PipeWire, its sources and default input, a Bluetooth card's profile, MPRIS, a press on a pod, UPower, GApplication, where GLib sends a notification and its buttons, logind's session hints, Flatpak's bus proxy
 - [`clocks.md`](docs/protocol/linux/clocks.md) - which clocks go on while the machine sleeps: `Instant` and tokio's not, the wall clock
 
 [`docs/app/`](docs/app/) - what Cymba does, and why:
@@ -538,6 +581,7 @@ A `Co-Authored-By:` trailer is fine.
 - [`conversation-awareness.md`](docs/app/conversation-awareness.md) - the setting recorded, the levels as events
 - [`volume.md`](docs/app/volume.md) - the volume lowered while the user speaks
 - [`media-pause.md`](docs/app/media-pause.md) - the media paused when a pod leaves an ear
+- [`mic.md`](docs/app/mic.md) - the microphone over AAP as a PipeWire input, the default input, the card switch after a stop, the decoder
 - [`names.md`](docs/app/names.md) - the pods' name beside BlueZ's alias, the rename dialog
 - [`firmware.md`](docs/app/firmware.md) - the firmware version read, kept for the run, shown
 - [`notifications.md`](docs/app/notifications.md) - low battery notifications

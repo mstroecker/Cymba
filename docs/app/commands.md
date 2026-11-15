@@ -3,14 +3,15 @@
 How a command reaches a pair: the one path every command takes, the order it keeps, and
 what its caller hears. The commands are the noise control mode
 ([noise-control.md](noise-control.md)), Conversation Awareness
-([conversation-awareness.md](conversation-awareness.md)) and the rename
-([names.md](names.md#rename)). The key request is no command: the link sends it as it
+([conversation-awareness.md](conversation-awareness.md)), the rename
+([names.md](names.md#rename)) and the microphone's start and stop
+([mic.md](mic.md#when-the-microphone-runs)), which only the microphone's task sends. The key request is no command: the link sends it as it
 comes up ([keystore.md](keystore.md)). Nor is a connect, which has no link to go on
 ([bluez.md](bluez.md#connecting-a-pair)).
 
 ## One path
 
-Every command - the window's and the tray's - goes through
+Every command - the window's, the tray's and the microphone's task's - goes through
 `Coordinator::command(mac, Command)`, which names its pair.
 
 **Queued in the call itself, not at the first poll** (#54). The command takes its place
