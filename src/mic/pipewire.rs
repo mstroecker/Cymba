@@ -53,12 +53,14 @@ use crate::aap::mic;
 const MAX_BUFFERED: usize = mic::SAMPLE_RATE as usize / 5;
 
 /// The samples gathered before the source plays any, after it started or
-/// ran dry: two audio packets' worth, 60 ms, so that packets coming 30 ms
-/// apart on average, and in bursts, do not run it dry at once. A choice.
+/// ran dry: two audio packets' worth, so that packets coming in bursts
+/// (`docs/protocol/aap/microphone.md`, Audio: `0x58 01 00`) do not run it
+/// dry at once. A choice.
 const PREFILL: usize = 2 * 4 * mic::FRAME_SAMPLES;
 
-/// The audio packets waiting in the queue at most: 16, about 0.5 s at a
-/// packet every 30 ms. More than [`MAX_BUFFERED`] keeps once decoded, so a
+/// The audio packets waiting in the queue at most: 16, about 0.5 s at the
+/// pace they came at (`docs/protocol/aap/microphone.md`, Audio:
+/// `0x58 01 00`). More than [`MAX_BUFFERED`] keeps once decoded, so a
 /// thread that is only slow loses nothing the source would play; one that
 /// hangs no longer grows the queue without end. One more is dropped, and
 /// the task counts it. A choice.

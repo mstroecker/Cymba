@@ -13,7 +13,8 @@
 //! one value, and the tray's window commands, the low battery and nearby
 //! notifications and a quit asked for by SIGTERM or SIGINT to the GTK main
 //! context on async channels. A third thread, PipeWire's, runs its loop for
-//! `mic::Mic`, which starts it and meets it over channels.
+//! `mic::Mic`, which starts it, asks it things on a queue of its own woken by
+//! a pipe, and hears back on a tokio channel.
 
 use cymba::{
     APP_ID, attachment, ble, indicator, media, mic, migrate, nearby, notify, podstate, presence,
