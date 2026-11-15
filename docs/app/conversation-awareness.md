@@ -19,6 +19,9 @@ The cost, accepted until the [open questions](../protocol/aap/conversation-aware
 say otherwise: a change made on a phone while the pair is linked here may never reach the
 app, and the switch shows the old setting until the next connection's dump.
 
+**Turned off for the microphone's stream,** when the microphone over AAP is on, and on
+again after it, if it was on: [mic.md](mic.md#conversation-awareness).
+
 - **Read only with byte 4 and byte 6 checked,** as the noise mode is: `0x09` sub-command
   `0x28`, decoded as `Message::ConversationAwareness`.
 - **Sent through `Coordinator::command`,** like the noise mode

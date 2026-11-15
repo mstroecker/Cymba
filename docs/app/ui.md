@@ -13,7 +13,7 @@ connect banner's title and button and the header's spinner from the connects und
 `Connecting::follow`, with no render loop of their own, and the microphone's row from
 whether it can be offered (`mic::MicControl::availability`, [Settings](#settings)). The
 window's render loops, one per stream, run on the main context, the only place a widget
-may be touched ([architecture.md](architecture.md#two-threads)). Each:
+may be touched ([architecture.md](architecture.md#the-threads)). Each:
 
 - **One pass per `RENDER_INTERVAL` at most.** tokio's cooperative budget does not reach
   glib's executor: under a stream of updates `changed()` would stay ready, and the loop
@@ -208,9 +208,10 @@ Each is on by default, also for a file from before the setting - but the microph
 which is experimental and off unless turned on.
 
 **The microphone's row says why it is not offered,** while it is not: the build has no
-`mic` feature, no decoder loads, or PipeWire cannot be reached (`mic::Availability`, a
-`watch` the row follows on the main context). It is insensitive then while the switch is
-off; one that is on can always be turned off.
+`mic` feature, no decoder loads, or, while the switch is on, PipeWire cannot be reached
+(`mic::Availability`, a `watch` the row follows on the main context). It is insensitive
+then while the switch is off; one that is on can always be turned off. Turned off, it no
+longer says PipeWire cannot be reached, so the next try is open.
 
 **Kept in `~/.config/cymba/settings.json`,** a file rather than GSettings: a GSettings
 schema has to be compiled and installed wherever the app runs, and GIO aborts the process

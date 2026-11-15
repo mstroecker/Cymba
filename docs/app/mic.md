@@ -29,10 +29,12 @@ The Preferences switch "AirPods microphone" (`Settings::mic_over_aap`,
   PipeWire side. With an attached pair on AAP - the first one linked, of several - the
   source is up and made the default input.
 - **Off:** a stream that runs is stopped, the default input put back, the source taken
-  down, and the PipeWire side ended.
-- **Not offered** - this build has no `mic` feature, no decoder loads, or PipeWire cannot
-  be reached - the row says why (`mic::Availability`), and is insensitive while the
-  switch is off. One that is on can always be turned off.
+  down, and the PipeWire side ended - once the default input is put back, which waits for
+  PipeWire if it went ([The PipeWire side](#the-pipewire-side)).
+- **Not offered** - this build has no `mic` feature, no decoder loads, or, while the
+  switch is on, PipeWire cannot be reached - the row says why (`mic::Availability`), and
+  is insensitive while the switch is off. One that is on can always be turned off, and
+  then no longer says PipeWire cannot be reached.
 
 ## When the microphone runs
 
@@ -45,8 +47,8 @@ Nothing is polled.
 | Something starts recording | Conversation Awareness off, if the link reads it on; then `Command::Microphone(true)`, the start. |
 | The last recording ends | The stop is due `mic::STOP_AFTER` later (a choice): an app that closes the input and opens it again, as a call switching devices does, keeps the stream. |
 | Something records again in time | Nothing: the stream goes on. |
-| The stop is due, or the pair is no longer the source's: the switch off, the pair detached | `Command::Microphone(false)`, the stop; Conversation Awareness on again; then the card switch ([The card switch](#the-card-switch)). |
-| The pair's link goes | The stream is over: no stop is sent, and the card is not switched. |
+| The stop is due, or the pair is no longer the source's: the switch off, or PipeWire gone | `Command::Microphone(false)`, the stop; Conversation Awareness on again; then the card switch ([The card switch](#the-card-switch)), unless PipeWire is gone, as there is none to ask. |
+| The pair's link goes - a detach too, which takes the link first | The stream is over: no stop is sent, and the card is not switched. |
 | Something records during the card switch | The start waits until the switch is done. |
 
 **Commands take the one path** (`Coordinator::command`, [commands.md](commands.md)), in
@@ -95,7 +97,9 @@ microphone" takes it, as a phone call would on the pods. The default input is Pi
 
 After every stop: the pair's card switched to its `off` profile and back to the profile
 it had, through the card's `Profile` param on PipeWire - what `pactl set-card-profile`
-does, which the probe used. Then, as the probe does:
+does, which the probe used. The param itself, through PipeWire's API, has not been set on
+a pair's card here ([protocol/linux/desktop.md](../protocol/linux/desktop.md#pipewire),
+[Hardware checks](#hardware-checks)). Then, as the probe does:
 
 1. **The players playing before** are read (MPRIS, `media::list_players`).
 2. **A new A2DP transport** is waited for, for `mic::RESUME_WAIT`: one that went and came
@@ -103,7 +107,9 @@ does, which the probe used. Then, as the probe does:
    ([protocol/aap/microphone.md](../protocol/aap/microphone.md#open-questions)).
 3. **Each of those players is played again** once it reports the pause the switch causes,
    with an explicit `Play`, within `mic::RESUME_WAIT`. One still playing, stopped or gone
-   is left alone: only what the switch paused is played.
+   is left alone: only what the switch paused is played. With no new A2DP transport in
+   step 2, or none for the pair at the `Play`, nothing is played: it would play on
+   another output, such as the laptop's speakers, and the switch ends there.
 4. **A2DP is waited for to play,** for `mic::RESUME_WAIT`. Not playing, the card is switched
    again, up to `mic::SWITCH_TRIES` switches; on a Pro 3 one switch once left both pods
    silent.
@@ -112,9 +118,14 @@ With nothing playing before, the switch is done after step 2.
 
 - **Only after a stop the app sent:** never on a timer of its own, never while nothing
   recorded, never for a link that went.
-- **On PipeWire's thread,** each step within a limit (`SWITCH_STEP_LIMIT`, a choice): a
-  card that does not report its switch off in time is set back all the same, so it is never
-  left off.
+- **On PipeWire's thread,** each step within a limit (`mic::SWITCH_STEP_LIMIT`, a
+  choice): a card that does not report its switch off in time is set back all the same.
+  At the quit a switch under way is set back too (`AudioRequest::SetBackCard`), within
+  `mic::QUIT_LIMIT`, and no other is started. So the card is never left off, but by an
+  app killed mid-switch.
+- **The thread's answer is bounded:** waited for `mic::SWITCH_REPLY_LIMIT`, past both
+  steps' limits, and failed by the thread as it ends
+  ([The PipeWire side](#the-pipewire-side)), so a stream is never held in its switch.
 - **Calls without auto-start, within `media::CALL_LIMIT`**, the players' side by side, as
   [media-pause.md](media-pause.md#the-task) makes them; the transport is read with
   `volume::a2dp_transport_in`, under the pair's device by `Device` and `UUID`.
@@ -158,6 +169,8 @@ FFmpeg of the app's own.
 
 The test `mic::pipewire::tests::serves_a_pipewire_of_its_own` runs it against a PipeWire
 daemon of its own ([protocol/linux/desktop.md](../protocol/linux/desktop.md#runs)).
+Where no daemon starts, or the test's recorder cannot be linked, it skips that part - but
+with `CI` set it fails instead, so CI never skips it unseen.
 
 On a thread of its own (`mic::pipewire`), running PipeWire's loop: PipeWire's objects
 never leave the thread that made them, and its loop blocks. The task asks it things over a
@@ -169,7 +182,22 @@ PipeWire channel (`mic::AudioRequest`) and hears from it on a tokio one
 - **Ready** once two round trips are done: every object announced, then the `default`
   metadata's properties read. The default input read then is the one the task starts from.
 - **Ended** when PipeWire goes or cannot be reached: the task starts it again on
-  `bluez::Backoff`, while the switch is on, as the tasks on the system bus do.
+  `bluez::Backoff`, as the tasks on the system bus do, while the switch is on - and,
+  with the switch off, while the source is still the default input, so the one before
+  can be put back. With the switch off the row stays usable meanwhile. A put back that
+  did not reach PipeWire is asked of the next thread.
+
+### Replies from the thread
+
+A `pw::channel` send never fails once the thread is gone: its queue lives as long as a
+sender does (pipewire-rs 0.10.1, `channel.rs`). So the thread marks the side ended before
+it says `AudioEvent::Gone` - `AudioSide::ask` false from then on - and drops the
+requests still queued, and the syncs it owes, as it ends: every `oneshot` in them fails.
+The task bounds each reply all the same - `mic::SWITCH_REPLY_LIMIT` for a card switch,
+`mic::SYNC_LIMIT` for a sync - for a thread that hangs rather than ends.
+
+Each thread tells the task on a channel of its own, replaced as the task starts one and as
+it ends one: an ended thread's `Gone` is never heard.
 
 ## Building without it
 
@@ -205,6 +233,22 @@ On a Pro 3, with the switch on and music playing over A2DP:
   ([protocol/aap/microphone.md](../protocol/aap/microphone.md#open-questions)).
 - The quit while recording: the stop is sent, with no card switch: whether one pod then
   stays silent until the next stream or reconnect.
+- The card's `Profile` param set through PipeWire's API, as `mic::pipewire` does, on a
+  pair's card: whether it switches the card as `pactl set-card-profile` did.
+- Quitting 0 to 2 s after a stop, during the card switch: whether the card is back on its
+  profile, and the music on both pods.
+- `systemctl --user restart pipewire wireplumber` while recording, and again during a
+  card switch: the source back once PipeWire is, the stream stopped, the card not left
+  off.
+- `kill -9` of the app while the source is the default input: what WirePlumber takes as
+  the default input then, with the source gone, and what the user sees once the next run
+  clears the default it finds naming the source ([The default input](#the-default-input)).
+- A call in a browser while music plays over A2DP, with the switch on: whether a pod
+  taken out of an ear pauses the call's player or the music
+  ([media-pause.md](media-pause.md#calls-are-left-alone)), and whether the volume is
+  lowered ([volume.md](volume.md#only-while-a2dp-plays-never-in-a-call)).
+- Whether Conversation Awareness stays off, and no speech level comes, for the whole
+  of a call.
 - The Flatpak: PipeWire reached through `xdg-run/pipewire-0`, and the runtime's codecs
   extension carrying the `aac` decoder.
 - A Pro 2 (USB-C) is assumed to behave the same.
