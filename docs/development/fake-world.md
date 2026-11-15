@@ -155,9 +155,8 @@ pod going silent after a stop, which the app switches the card for, has no fake.
 `Pods::mic_running` says whether the stream runs.
 
 The fake world reaches no PipeWire: `scripts/fake-world.sh` sets `PIPEWIRE_REMOTE` to a
-socket path in an empty directory. libpipewire tries an absolute remote alone, while a
-relative one falls back to the system's `/run/pipewire`
-([protocol/linux/desktop.md](../protocol/linux/desktop.md#runs)), so the
+socket path in an empty directory, which libpipewire tries alone
+([protocol/linux/desktop.md](../protocol/linux/desktop.md#pipewire)), so the
 microphone's switch, turned on, says PipeWire cannot be reached, and never touches the
 user's PipeWire or default input. The pipeline tests hand the app
 a fake audio side in PipeWire's place; the PipeWire side itself runs against a daemon of

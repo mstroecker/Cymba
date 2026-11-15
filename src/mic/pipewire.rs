@@ -1,8 +1,8 @@
 //! The microphone's PipeWire side: the source node apps record from, the
 //! default input, and the pair's card switched off and back. On a thread of
 //! its own, running PipeWire's loop, as PipeWire's objects never leave the
-//! thread that made them; the task in `crate::mic` asks it things over a
-//! PipeWire channel, and hears from it on a tokio one.
+//! thread that made them; the task in `crate::mic` asks it things on a queue
+//! whose pipe wakes PipeWire's loop, and hears from it on a tokio channel.
 //!
 //! - **The source** is a stream with `media.class` `Audio/Source`, named
 //!   [`super::NODE_NAME`]: it plays the decoded samples at
@@ -20,7 +20,7 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
-use std::io::Cursor;
+use std::io::{Cursor, Read, Write};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -36,6 +36,7 @@ use pw::spa::param::ParamType;
 use pw::spa::pod::deserialize::PodDeserializer;
 use pw::spa::pod::serialize::PodSerializer;
 use pw::spa::pod::{Object, Pod, Property, PropertyFlags, Value};
+use pw::spa::support::system::IoFlags;
 use pw::stream::{StreamFlags, StreamListener, StreamRc, StreamState};
 use pw::types::ObjectType;
 use tokio::sync::{mpsc, oneshot};
@@ -59,19 +60,33 @@ const PREFILL: usize = 2 * 4 * mic::FRAME_SAMPLES;
 /// How often a card switch under way is looked at, for its limit.
 const SWITCH_CHECK: Duration = Duration::from_millis(500);
 
-/// The PipeWire channel's sender, which wakes the thread's loop, until the
-/// thread ends: a `pw::channel` send never fails once the thread is gone.
-type Shared = Arc<Mutex<Option<pw::channel::Sender<AudioRequest>>>>;
+/// What the task asks, waiting for the thread, until the thread ends. Not a
+/// `pw::channel` (`docs/protocol/linux/desktop.md#pipewire`): the thread
+/// takes the requests out before it serves them, so a decode never holds up
+/// the task.
+type Shared = Arc<Mutex<Option<Queue>>>;
+
+struct Queue {
+    requests: VecDeque<AudioRequest>,
+    /// A byte written as the queue stops being empty wakes the thread's
+    /// loop; the thread reads it as it takes the queue.
+    wake: std::io::PipeWriter,
+}
 
 /// The thread's handle on the task's side.
 struct Requests(Shared);
 
 impl AudioSide for Requests {
     fn ask(&self, request: AudioRequest) -> bool {
-        match &*lock(&self.0) {
-            Some(sender) => sender.send(request).is_ok(),
-            None => false,
+        let mut shared = lock(&self.0);
+        let Some(queue) = shared.as_mut() else {
+            return false;
+        };
+        if queue.requests.is_empty() && queue.wake.write_all(&[1]).is_err() {
+            return false;
         }
+        queue.requests.push_back(request);
+        true
     }
 }
 
@@ -82,9 +97,8 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// Marks the side ended as the thread ends, however it ends - a panic too -
-/// and only then says so with [`AudioEvent::Gone`]. The sender taken, the
-/// channel goes with the thread's receiver, and with it every request still
-/// queued: each `oneshot` in one fails.
+/// and only then says so with [`AudioEvent::Gone`]. The queue taken, every
+/// request still in it goes: each `oneshot` in one fails.
 struct Ending {
     requests: Shared,
     events: mpsc::UnboundedSender<AudioEvent>,
@@ -93,9 +107,9 @@ struct Ending {
 impl Ending {
     /// Ends the side, the first time, saying `reason`.
     fn end(&self, reason: String) {
-        let sender = lock(&self.requests).take();
-        if sender.is_some() {
-            drop(sender);
+        let queue = lock(&self.requests).take();
+        if queue.is_some() {
+            drop(queue);
             let _ = self.events.send(AudioEvent::Gone(reason));
         }
     }
@@ -115,21 +129,35 @@ pub fn start(events: mpsc::UnboundedSender<AudioEvent>) -> Box<dyn AudioSide> {
 }
 
 /// [`start`], connecting to the PipeWire at `remote` - a socket's path, or
-/// its name in the runtime directory - in place of the user's.
+/// its name in the runtime directory - in place of the user's, unless
+/// `PIPEWIRE_REMOTE` names one, which wins
+/// (`docs/protocol/linux/desktop.md#pipewire`).
 pub fn start_at(
     remote: Option<String>,
     events: mpsc::UnboundedSender<AudioEvent>,
 ) -> Box<dyn AudioSide> {
-    let (sender, receiver) = pw::channel::channel();
-    let requests: Shared = Arc::new(Mutex::new(Some(sender)));
+    let (woken, wake) = match std::io::pipe() {
+        Ok(pipe) => pipe,
+        Err(e) => {
+            let _ = events.send(AudioEvent::Gone(format!(
+                "no pipe for PipeWire's thread: {e}"
+            )));
+            return Box::new(Requests(Arc::new(Mutex::new(None))));
+        }
+    };
+    let requests: Shared = Arc::new(Mutex::new(Some(Queue {
+        requests: VecDeque::new(),
+        wake,
+    })));
     let ending = Ending {
         requests: requests.clone(),
         events,
     };
+    let taken = requests.clone();
     let spawned = std::thread::Builder::new()
         .name("cymba-pipewire".into())
         .spawn(move || {
-            let served = serve(remote, receiver, &ending.events);
+            let served = serve(remote, taken, woken, &ending.events);
             ending.end(match served {
                 Ok(()) => "the connection to PipeWire ended".to_string(),
                 Err(e) => format!("{e:#}"),
@@ -241,7 +269,8 @@ struct State {
 /// the task asks it to quit. Every reply still owed fails as it returns.
 fn serve(
     remote: Option<String>,
-    requests: pw::channel::Receiver<AudioRequest>,
+    requests: Shared,
+    woken: std::io::PipeReader,
     events: &mpsc::UnboundedSender<AudioEvent>,
 ) -> Result<()> {
     pw::init();
@@ -353,7 +382,7 @@ fn serve(
         let quit = main_loop.downgrade();
         let (state, ring, core, events) =
             (state.clone(), ring.clone(), core.clone(), events.clone());
-        requests.attach(main_loop.loop_(), move |request| match request {
+        let serve_one = move |request| match request {
             AudioRequest::Source(up) => set_source(up, &state, &ring, &core, &events),
             AudioRequest::Audio(packet) => decode(&packet, &state, &ring),
             AudioRequest::SetDefault(name) => set_default(name.as_deref(), &state),
@@ -370,7 +399,24 @@ fn serve(
                     main_loop.quit();
                 }
             }
-        })
+        };
+        // The byte read and the queue taken under the lock; each request
+        // served once it is let go.
+        main_loop.loop_().add_io(
+            woken,
+            IoFlags::IN,
+            move |woken: &mut std::io::PipeReader| {
+                let taken = {
+                    let mut shared = lock(&requests);
+                    let _ = woken.read(&mut [0]);
+                    shared
+                        .as_mut()
+                        .map(|queue| std::mem::take(&mut queue.requests))
+                        .unwrap_or_default()
+                };
+                taken.into_iter().for_each(&serve_one);
+            },
+        )
     };
 
     main_loop.run();
@@ -1012,6 +1058,11 @@ context.objects = [
     /// the side has said it is gone, nothing more is taken.
     #[test]
     fn serves_a_pipewire_of_its_own() {
+        // It would win over the daemon's socket, and may name the user's.
+        if std::env::var_os("PIPEWIRE_REMOTE").is_some() {
+            untried("PIPEWIRE_REMOTE is set, which the test's own client would connect to");
+            return;
+        }
         let Some(daemon) = Daemon::start() else {
             return;
         };

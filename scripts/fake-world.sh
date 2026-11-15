@@ -180,10 +180,9 @@ start() {
 
     # Automation1 is asked for here and nowhere else: on this private session
     # bus, nothing of the user's can press the window. PipeWire is looked for
-    # at a socket path in an empty directory - an absolute remote, which
-    # libpipewire tries alone (docs/protocol/linux/desktop.md, Runs) - so the
-    # microphone's switch, turned on, never reaches the user's PipeWire or
-    # default input.
+    # at a socket path in an empty directory, tried alone
+    # (docs/protocol/linux/desktop.md#pipewire), so the microphone's switch,
+    # turned on, never reaches the user's PipeWire or default input.
     mkdir -p "$run/pipewire"
     # shellcheck disable=SC2086 # $display and $common are lists of arguments
     spawn cymba "$run/log/cymba.log" env $display $common \

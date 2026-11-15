@@ -65,6 +65,18 @@ PipeWire 1.6.10 against a daemon of a test's own, with no session manager, on
   index switches the card, as `pactl set-card-profile` does (PipeWire 1.6.10,
   `spa/plugins/bluez5/bluez5-device.c`, and the `pactl` switch of
   [aap/microphone.md](../aap/microphone.md#a2dp); the param itself not run on a pair here).
+- **`PIPEWIRE_REMOTE` wins over a client's `remote.name`:** set and not empty, it is the
+  remote; the property is read only without it (PipeWire 1.6.10,
+  `src/modules/module-protocol-native/local-socket.c`, `get_remote`).
+- **A remote that is a path is tried alone;** a name is looked for in the runtime
+  directory - `PIPEWIRE_RUNTIME_DIR`, else `XDG_RUNTIME_DIR` - and then in
+  `/run/pipewire` (PipeWire 1.6.10, `local-socket.c`, `try_connect_name`; 1.0.5 did the
+  same, run below).
+- **A `pw::channel` send succeeds after its receiver is gone:** the queue is shared by
+  sender and receiver and lives while a sender does; only a poisoned lock or a failed
+  pipe write fails it. **Its receiver serves the queue under the lock a send takes:** the
+  callback runs for every message queued with the channel's mutex held, so a send waits
+  for all of them (pipewire-rs 0.10.1, `src/channel.rs`).
 
 ## A press on a pod
 

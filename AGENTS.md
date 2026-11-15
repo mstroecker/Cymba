@@ -334,8 +334,9 @@ notification was Conversation Awareness's speech level `09` (#150).
   transport, then only the players the switch paused played again with an explicit `Play`, and
   only while the pair has an A2DP transport, up to `mic::SWITCH_TRIES` switches.
   [Why](docs/app/mic.md#the-card-switch)
-- A reply awaited from PipeWire's thread is bounded, or failed by the thread as it ends: a
-  `pw::channel` send never fails once the thread is gone. [Why](docs/app/mic.md#replies-from-the-thread)
+- Requests reach PipeWire's thread on a queue it takes whole and serves outside the queue's lock,
+  never a `pw::channel`; a reply awaited from the thread is bounded, or failed by the thread as it
+  ends. [Why](docs/app/mic.md#replies-from-the-thread)
 - PipeWire's thread runs while the switch is on, and with it off until the default input is put
   back, started again on `bluez::Backoff`; with the switch off, the row stays usable.
   [Why](docs/app/mic.md#the-pipewire-side)
@@ -481,8 +482,9 @@ notification was Conversation Awareness's speech level `09` (#150).
   the harness writes to the app's real data or config directory, or LinuxPods' ones, and
   its fake media player goes only on a private session bus: `fakepods` refuses
   `/run/user/<uid>/bus`. The fake world points the app at a socket path in an empty directory
-  for PipeWire (an absolute `PIPEWIRE_REMOTE`, which has no fallback),
-  and the PipeWire test runs a daemon of its own: neither reaches the user's PipeWire.
+  for PipeWire (`PIPEWIRE_REMOTE`, [why](docs/protocol/linux/desktop.md#pipewire)), and the
+  PipeWire test runs a daemon of its own, untried with `PIPEWIRE_REMOTE` set: neither reaches
+  the user's PipeWire.
 
 **UI.** [Why](docs/app/ui.md)
 - Widget updates arrive only from the snapshot stream, the scanning hint's from the scanner's

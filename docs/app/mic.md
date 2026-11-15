@@ -108,8 +108,9 @@ a pair's card here ([protocol/linux/desktop.md](../protocol/linux/desktop.md#pip
 3. **Each of those players is played again** once it reports the pause the switch causes,
    with an explicit `Play`, within `mic::RESUME_WAIT`. One still playing, stopped or gone
    is left alone: only what the switch paused is played. With no new A2DP transport in
-   step 2, or none for the pair at the `Play`, nothing is played: it would play on
-   another output, such as the laptop's speakers, and the switch ends there.
+   step 2, nothing is played - it would play on another output, such as the laptop's
+   speakers - and the switch ends there; a player whose pair has no transport at the
+   `Play` is left paused for the same reason, and step 4 goes on.
 4. **A2DP is waited for to play,** for `mic::RESUME_WAIT`. Not playing, the card is switched
    again, up to `mic::SWITCH_TRIES` switches; on a Pro 3 one switch once left both pods
    silent.
@@ -121,8 +122,9 @@ With nothing playing before, the switch is done after step 2.
 - **On PipeWire's thread,** each step within a limit (`mic::SWITCH_STEP_LIMIT`, a
   choice): a card that does not report its switch off in time is set back all the same.
   At the quit a switch under way is set back too (`AudioRequest::SetBackCard`), within
-  `mic::QUIT_LIMIT`, and no other is started. So the card is never left off, but by an
-  app killed mid-switch.
+  `mic::QUIT_LIMIT`, and no other is started: the switch's task is aborted, and waited
+  for, so a switch it was asking for meanwhile is asked before the set back, never after.
+  So the card is never left off, but by an app killed mid-switch.
 - **The thread's answer is bounded:** waited for `mic::SWITCH_REPLY_LIMIT`, past both
   steps' limits, and failed by the thread as it ends
   ([The PipeWire side](#the-pipewire-side)), so a stream is never held in its switch.
@@ -173,9 +175,9 @@ Where no daemon starts, or the test's recorder cannot be linked, it skips that p
 with `CI` set it fails instead, so CI never skips it unseen.
 
 On a thread of its own (`mic::pipewire`), running PipeWire's loop: PipeWire's objects
-never leave the thread that made them, and its loop blocks. The task asks it things over a
-PipeWire channel (`mic::AudioRequest`) and hears from it on a tokio one
-(`mic::AudioEvent`).
+never leave the thread that made them, and its loop blocks. The task asks it things on a
+queue (`mic::AudioRequest`, [Replies from the thread](#replies-from-the-thread)) and hears
+from it on a tokio channel (`mic::AudioEvent`).
 
 - **The source** is a stream with `media.class` `Audio/Source`, `node.name`
   `cymba.airpods_mic` (`mic::NODE_NAME`), one channel at 64 kHz.
@@ -189,11 +191,17 @@ PipeWire channel (`mic::AudioRequest`) and hears from it on a tokio one
 
 ### Replies from the thread
 
-A `pw::channel` send never fails once the thread is gone: its queue lives as long as a
-sender does (pipewire-rs 0.10.1, `channel.rs`). So the thread marks the side ended before
-it says `AudioEvent::Gone` - `AudioSide::ask` false from then on - and drops the
-requests still queued, and the syncs it owes, as it ends: every `oneshot` in them fails.
-The task bounds each reply all the same - `mic::SWITCH_REPLY_LIMIT` for a card switch,
+The requests wait on a queue the task's side and the thread share. A byte on a pipe, written
+as the queue stops being empty, wakes the thread's loop; the thread takes the whole queue
+under its lock and serves each request once the lock is let go, so an audio packet's decode
+never holds up the task. Not a `pw::channel`
+([protocol/linux/desktop.md](../protocol/linux/desktop.md#pipewire)), whose send would wait
+for every decode queued before it.
+
+The queue would take a request after its thread is gone. So the thread takes the queue
+away as it ends, before it says `AudioEvent::Gone` - `AudioSide::ask` false from then on -
+and with it the requests still in it, and drops the syncs it owes: every `oneshot` in them
+fails. The task bounds each reply all the same - `mic::SWITCH_REPLY_LIMIT` for a card switch,
 `mic::SYNC_LIMIT` for a sync - for a thread that hangs rather than ends.
 
 Each thread tells the task on a channel of its own, replaced as the task starts one and as
@@ -236,7 +244,13 @@ On a Pro 3, with the switch on and music playing over A2DP:
 - The card's `Profile` param set through PipeWire's API, as `mic::pipewire` does, on a
   pair's card: whether it switches the card as `pactl set-card-profile` did.
 - Quitting 0 to 2 s after a stop, during the card switch: whether the card is back on its
-  profile, and the music on both pods.
+  profile. The music is expected to stay paused if the quit came after the switch paused
+  it: nothing plays it again.
+- How often no new A2DP transport comes within `mic::RESUME_WAIT` of a switch, which
+  leaves the music paused.
+- Whether `mic::SWITCH_REPLY_LIMIT` outlasts a real switch off and back on a pair's card.
+- `systemctl --user restart pipewire wireplumber` while the source is the default input,
+  then the switch off: the input before put back once PipeWire is.
 - `systemctl --user restart pipewire wireplumber` while recording, and again during a
   card switch: the source back once PipeWire is, the stream stopped, the card not left
   off.

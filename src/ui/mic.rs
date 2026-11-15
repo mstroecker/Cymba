@@ -76,7 +76,7 @@ pub(super) fn row(availability: watch::Receiver<Availability>) -> adw::ActionRow
 /// whether it is sensitive, and the line under its title.
 pub(super) fn shown(availability: &Availability, on: bool) -> (bool, String) {
     match availability {
-        // Not asked yet: PipeWire is asked once the switch is on.
+        // Nothing known: the switch is off, or PipeWire not answered yet.
         Availability::Unknown | Availability::Available => (true, SUBTITLE.to_string()),
         Availability::Unavailable(reason) => (on, format!("Not available: {reason}")),
     }

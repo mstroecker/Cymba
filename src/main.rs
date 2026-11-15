@@ -164,8 +164,9 @@ impl Primary {
         ui::add_pause_on_ear(app, settings.clone(), pause_on_ear);
         // The microphone over AAP, while its Preferences switch is on - off
         // unless turned on: PipeWire on a thread of its own once the switch
-        // is on, BlueZ and the players for the card switch after a stop,
-        // each connected once needed.
+        // is on, and with it off while the default input is still to be put
+        // back; BlueZ and the players for the card switch after a stop, each
+        // connected once needed.
         let (mic_switch, mic_on) = tokio::sync::watch::channel(false);
         let (offering, mic) = mic::Mic::new(
             coordinator.clone(),

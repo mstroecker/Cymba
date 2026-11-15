@@ -74,7 +74,7 @@ pub const SYNC_LIMIT: Duration = Duration::from_secs(5);
 /// Whether the microphone can be offered, for the Preferences switch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Availability {
-    /// Not known yet: PipeWire not asked.
+    /// Nothing known: PipeWire not asked, or the switch off since.
     Unknown,
     Available,
     /// Why not, in a sentence for the switch's row.
@@ -468,7 +468,8 @@ enum ControlRequest {
     /// asked of the audio side, whether the stream is idle.
     Settled(oneshot::Sender<bool>),
     /// Stop the stream, put Conversation Awareness and the default input
-    /// back, take the source down, and say when done.
+    /// back, set back a card switch under way, take the source down, and say
+    /// when done.
     Quit(oneshot::Sender<()>),
 }
 
@@ -666,7 +667,8 @@ impl Mic {
     }
 
     /// Runs until the coordinator goes. The audio side is started while the
-    /// switch is on, and again after it ended, waiting longer each time.
+    /// switch is on, or while it is off with the default input still to be
+    /// put back, and again after it ended, waiting longer each time.
     ///
     /// Events come first, then audio, what the audio side tells, the
     /// snapshots, the switch and the task's own work, then the timers, and
@@ -1007,9 +1009,11 @@ impl Mic {
         self.quitting = true;
         if self.stream.is_switching() {
             // No further switch is asked for; the one under way, if any,
-            // is set back.
+            // is set back - once its task is gone, so a switch it was
+            // asking for meanwhile is asked before the set back, not after.
             if let Some(switching) = self.switching.take() {
                 switching.abort();
+                let _ = switching.await;
             }
             if let Some(side) = &self.audio {
                 tracing::info!("Setting the card back: the app quits during its switch");
