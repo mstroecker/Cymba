@@ -1,17 +1,19 @@
 # The desktop
 
 What the desktop around BlueZ does that a client has to know: PipeWire following the
-transport's volume, MPRIS, the path a press on a pod takes to a player, and UPower's
+transport's volume, an input offered on PipeWire, its default input and a Bluetooth
+card's profile, MPRIS, the path a press on a pod takes to a player, and UPower's
 warning level for a Bluetooth battery, how GApplication keeps an app to one instance,
 and how it serves its actions on the bus, where GLib sends a notification and what GNOME
 Shell does with its button, what logind and GNOME say of whether the user is at the desktop, and what
 Flatpak's bus proxy lets through. Checked on hardware where a run below says so; MPRIS
 is from its specification, UPower also from its source, GLib, GNOME Shell,
 gnome-session, logind, Flatpak and the bus proxy from their documentation and source, and the
-key path is only as understood, not traced.
+key path is only as understood, not traced. PipeWire's input and default input ran
+against a PipeWire daemon of a test's own.
 
-The app acts on these in `volume`, `media`, `notify`, `nearby`, `presence` and
-`ui::connect`: [app/volume.md](../../app/volume.md),
+The app acts on these in `volume`, `media`, `mic`, `notify`, `nearby`, `presence` and
+`ui::connect`: [app/volume.md](../../app/volume.md), [app/mic.md](../../app/mic.md),
 [app/media-pause.md](../../app/media-pause.md),
 [app/notifications.md](../../app/notifications.md),
 [app/nearby.md](../../app/nearby.md). On GApplication's, at its startup:
@@ -38,6 +40,31 @@ Media players are controlled over MPRIS, on the session bus
 - **`Pause` and `Play`** each go one way only: `Pause` on a paused player and `Play` on
   a playing one change nothing.
 - **`PlayPause` is a toggle**: sent to a player that is not playing, it starts it.
+
+## PipeWire
+
+What a client of PipeWire meets when it offers an input and changes the default one. From
+PipeWire 1.6.10 against a daemon of a test's own, with no session manager, on
+2026-11-15 (#209; run below), unless an item says otherwise.
+
+- **A client's stream with `media.class` `Audio/Source` is an input apps record from.**
+  Its state is `Paused` while nothing records from it, and `Streaming` while a recorder
+  linked to it runs; back to `Paused` once the recorder goes.
+- **The stream's format is converted for each app.** A stream offers its own format;
+  PipeWire's adapter converts to the graph's and the recorder's, once the stream's ports
+  are set up. With no session manager, a stream has no ports until a `PortConfig` param
+  sets them, as WirePlumber does: the run set `dsp` mode with a format by hand.
+- **The default input is the `default` metadata's `default.configured.audio.source`,** on
+  subject 0, of type `Spa:String:JSON`, its value `{ "name": "<node.name>" }`. Set or
+  cleared by a client, it is told back to every client bound to the metadata. GNOME's
+  Sound panel and `pactl set-default-source` set this key, which WirePlumber keeps and
+  follows when picking the input it uses (WirePlumber's documentation; not run here).
+- **A Bluetooth device's card is a `bluez5` device object** with `api.bluez5.address`
+  its address, its profiles its `EnumProfile` params and its profile now its `Profile`
+  param, each with an index and a name; one is named `off`. Setting `Profile` to an
+  index switches the card, as `pactl set-card-profile` does (PipeWire's
+  `spa/plugins/bluez5/bluez5-device.c`, and the `pactl` switch of
+  [aap/microphone.md](../aap/microphone.md#a2dp); the param itself not run on a pair here).
 
 ## A press on a pod
 
@@ -213,6 +240,15 @@ well-known name (`xdg-dbus-proxy(1)`, 0.1.9, unless another source is named):
   unique name that owns a granted name goes through.
 
 ## Runs
+
+**PipeWire: a daemon of a test's own, 2026-11-15 (#209).** `pipewire` 1.6.10 with the
+native protocol, access, metadata, client-node, adapter and link-factory modules, a
+`default` metadata and a dummy driver, its socket in a temporary directory, no session
+manager: `mic::pipewire::tests::serves_a_pipewire_of_its_own`, which CI runs too. A
+`pw-record` was given ports with `pw-cli set-param <id> PortConfig '{ direction: Input,
+mode: dsp, format: { ... } }'`, the source likewise, and linked with `pw-link`; the
+source's stream went `Paused` to `Streaming`, and back once `pw-record` was killed. The
+default input set and cleared on the metadata came back to the client each time.
 
 **The volume: Pro 3, 2026-11-01 (#150).** The transport's `Volume` was set from 32 to 20
 and back with `busctl`, which was not the transport's owner. PipeWire's sink followed

@@ -94,8 +94,9 @@ The window draws at most once per `RENDER_INTERVAL`: [ui.md](ui.md#updates-come-
 
 ## Events
 
-Two consumers need every change, not the latest state: the volume needs every speech
-level, and the media pause every change of a pod's place. A short stretch of speech's
+Three consumers need every change, not the latest state: the volume needs every speech
+level, the media pause every change of a pod's place, and the microphone every link
+coming up and going. A short stretch of speech's
 `01` could be gone from the watch before a consumer looked. So these go out as events,
 in order, on a channel per consumer:
 
@@ -103,6 +104,13 @@ in order, on a channel per consumer:
 |---|---|---|
 | `SpeechEvent` (`Coordinator::speech_events`): each level, and the link coming up and going | `volume::Volume` | [volume.md](volume.md), [conversation-awareness.md](conversation-awareness.md) |
 | `EarEvent` (`Coordinator::ear_events`): each pod's place, and the link coming up and going | `media::Media` | [media-pause.md](media-pause.md), [in-ear.md](in-ear.md) |
+| `MicEvent` (`Coordinator::mic_events`): the pods' answer to the microphone's start and stop, and the link coming up and going | `mic::Mic` | [mic.md](mic.md#when-the-microphone-runs) |
+
+**The microphone's audio is no event of this kind.** Some 33 packets a second while it
+runs, it goes to one consumer (`Coordinator::mic_audio`) over a bounded channel, never
+waited for: one that does not fit is dropped and counted. That consumer is a std mutex
+beside `inner` too, taken alone, never under `inner` and never across an await
+([mic.md](mic.md#the-audio)).
 
 - **Between the link's coming up and its going.** The consumers of each kind are a std
   mutex beside `inner`. It is taken under `inner`'s write lock to tell an event, so a

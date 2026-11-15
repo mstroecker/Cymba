@@ -25,6 +25,10 @@ Any packet with either opcode is cut short, whether it parses or not.
   packet, its 7-byte preamble alone.
 - `AAP packet (N bytes), whole:` at `trace` shows the whole packet, redacted, for what
   lies past those 8 bytes: `0x08`'s last two took a local build to see (#142).
+- **Neither for the microphone's audio,** some 33 packets a second while it runs, and what
+  the user says: the read loop hands an audio packet on before anything is logged
+  ([mic.md](mic.md#the-audio)). The stop logs how many were dropped, and the end of a
+  recording how many frames did not decode.
 
 ## BLE advertisements
 
