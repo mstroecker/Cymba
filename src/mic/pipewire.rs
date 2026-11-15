@@ -57,6 +57,13 @@ const MAX_BUFFERED: usize = mic::SAMPLE_RATE as usize / 5;
 /// apart on average, and in bursts, do not run it dry at once. A choice.
 const PREFILL: usize = 2 * 4 * mic::FRAME_SAMPLES;
 
+/// The audio packets waiting in the queue at most: 16, about 0.5 s at a
+/// packet every 30 ms. More than [`MAX_BUFFERED`] keeps once decoded, so a
+/// thread that is only slow loses nothing the source would play; one that
+/// hangs no longer grows the queue without end. One more is dropped, and
+/// the task counts it. A choice.
+const MAX_QUEUED_AUDIO: usize = 16;
+
 /// How often a card switch under way is looked at, for its limit.
 const SWITCH_CHECK: Duration = Duration::from_millis(500);
 
@@ -68,9 +75,19 @@ type Shared = Arc<Mutex<Option<Queue>>>;
 
 struct Queue {
     requests: VecDeque<AudioRequest>,
+    /// The audio packets among `requests`.
+    audio: usize,
     /// A byte written as the queue stops being empty wakes the thread's
     /// loop; the thread reads it as it takes the queue.
     wake: std::io::PipeWriter,
+}
+
+impl Queue {
+    /// Every request waiting, for the thread to serve.
+    fn take(&mut self) -> VecDeque<AudioRequest> {
+        self.audio = 0;
+        std::mem::take(&mut self.requests)
+    }
 }
 
 /// The thread's handle on the task's side.
@@ -82,10 +99,15 @@ impl AudioSide for Requests {
         let Some(queue) = shared.as_mut() else {
             return false;
         };
+        let audio = matches!(request, AudioRequest::Audio(_));
+        if audio && queue.audio >= MAX_QUEUED_AUDIO {
+            return false;
+        }
         if queue.requests.is_empty() && queue.wake.write_all(&[1]).is_err() {
             return false;
         }
         queue.requests.push_back(request);
+        queue.audio += usize::from(audio);
         true
     }
 }
@@ -147,6 +169,7 @@ pub fn start_at(
     };
     let requests: Shared = Arc::new(Mutex::new(Some(Queue {
         requests: VecDeque::new(),
+        audio: 0,
         wake,
     })));
     let ending = Ending {
@@ -409,10 +432,7 @@ fn serve(
                 let taken = {
                     let mut shared = lock(&requests);
                     let _ = woken.read(&mut [0]);
-                    shared
-                        .as_mut()
-                        .map(|queue| std::mem::take(&mut queue.requests))
-                        .unwrap_or_default()
+                    shared.as_mut().map(Queue::take).unwrap_or_default()
                 };
                 taken.into_iter().for_each(&serve_one);
             },
@@ -1185,6 +1205,29 @@ context.objects = [
         assert_eq!(ring.samples.len(), MAX_BUFFERED);
         assert_eq!(ring.samples.back(), Some(&0.9));
         assert_eq!(ring.samples.front(), Some(&0.1));
+    }
+
+    /// Sixteen audio packets wait at most; the seventeenth is refused, while
+    /// any other request is still taken. Once the thread has taken the
+    /// queue, audio is taken again.
+    #[test]
+    fn the_queue_holds_sixteen_audio_packets() {
+        let (_woken, wake) = std::io::pipe().unwrap();
+        let shared: Shared = Arc::new(Mutex::new(Some(Queue {
+            requests: VecDeque::new(),
+            audio: 0,
+            wake,
+        })));
+        let side = Requests(shared.clone());
+        for _ in 0..16 {
+            assert!(side.ask(AudioRequest::Audio(vec![0; 4])));
+        }
+        assert!(!side.ask(AudioRequest::Audio(vec![0; 4])));
+        assert!(side.ask(AudioRequest::SetDefault(None)));
+        assert!(side.ask(AudioRequest::Source(false)));
+        let taken = lock(&shared).as_mut().unwrap().take();
+        assert_eq!(taken.len(), 18);
+        assert!(side.ask(AudioRequest::Audio(vec![0; 4])));
     }
 
     /// A default's value names its node; anything else names none.

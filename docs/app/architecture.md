@@ -17,8 +17,8 @@ goes the other way is spawned on the runtime.
 
 **A third thread,** PipeWire's, runs while the microphone's switch is on, and until the
 default input is put back after: its loop blocks, and its objects never leave the thread
-that made them. `mic::Mic` starts it, and meets it over channels
-([mic.md](mic.md#the-pipewire-side)).
+that made them. `mic::Mic` starts it, and meets it over a queue of its own, woken by a pipe, and a
+channel back ([mic.md](mic.md#the-pipewire-side)).
 
 ## The channels
 
@@ -37,7 +37,7 @@ that made them. `mic::Mic` starts it, and meets it over channels
 | Whether the microphone can be offered | `mic::Mic` | the microphone's Preferences row, on the main context | `watch` (`mic::MicControl::availability`): [ui.md](ui.md#settings) |
 | The microphone's links and answers | the coordinator | `mic::Mic` | events (`Coordinator::mic_events`): [state.md](state.md#events) |
 | The microphone's audio | the read loop | `mic::Mic`, which hands it to PipeWire's thread | a bounded `mpsc` (`Coordinator::mic_audio`), dropped when full: [mic.md](mic.md#the-audio) |
-| What the microphone asks of PipeWire | `mic::Mic` | PipeWire's thread | a PipeWire channel (`mic::AudioRequest`): [mic.md](mic.md#the-pipewire-side) |
+| What the microphone asks of PipeWire | `mic::Mic` | PipeWire's thread | a queue of its own, woken by a pipe (`mic::AudioRequest`): [mic.md](mic.md#replies-from-the-thread) |
 | What PipeWire tells the microphone | PipeWire's thread | `mic::Mic` | `mpsc` (`mic::AudioEvent`) |
 | Speech levels | the coordinator | `volume::Volume` | events (`Coordinator::speech_events`): [state.md](state.md#events) |
 | Each pod's place | the coordinator | `media::Media` | events (`Coordinator::ear_events`): [state.md](state.md#events) |

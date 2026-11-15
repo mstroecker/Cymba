@@ -51,7 +51,7 @@ How the parts fit together: [docs/app/architecture.md](docs/app/architecture.md)
   channels (`watch`, `async-channel`, `oneshot`), consumed with `glib::spawn_future_local`.
 - Never touch a widget from a tokio task.
 - PipeWire's objects stay on PipeWire's thread (`mic::pipewire`), which runs its loop; `mic::Mic`
-  meets it over channels: a PipeWire channel there, a tokio one back.
+  meets it over a queue of its own there, woken by a pipe, and a tokio channel back.
   [Why](docs/app/mic.md#the-pipewire-side)
 
 **State.** [Why](docs/app/state.md)
@@ -335,10 +335,13 @@ notification was Conversation Awareness's speech level `09` (#150).
   only while the pair has an A2DP transport, up to `mic::SWITCH_TRIES` switches.
   [Why](docs/app/mic.md#the-card-switch)
 - Requests reach PipeWire's thread on a queue it takes whole and serves outside the queue's lock,
-  never a `pw::channel`; a reply awaited from the thread is bounded, or failed by the thread as it
+  never a `pw::channel`; audio packets past `MAX_QUEUED_AUDIO` in it are dropped and counted, no
+  other request ever; a reply awaited from the thread is bounded, or failed by the thread as it
   ends. [Why](docs/app/mic.md#replies-from-the-thread)
 - PipeWire's thread runs while the switch is on, and with it off until the default input is put
-  back, started again on `bluez::Backoff`; with the switch off, the row stays usable.
+  back - once the thread has answered a sync asked after the put back; a thread that ends first
+  leaves it to the next - started again on `bluez::Backoff`; with the switch off, the row stays
+  usable.
   [Why](docs/app/mic.md#the-pipewire-side)
 - FFmpeg's own `aac` decoder from the system's libavcodec, loaded at runtime, never linked, never
   `libfdk_aac`: a soname from `decoder::NEWEST_MAJOR` down to `decoder::OLDEST_MAJOR`, its version

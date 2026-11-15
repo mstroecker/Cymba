@@ -139,8 +139,9 @@ With nothing playing before, the switch is done after step 2.
 - **Handed on, never waited for.** The read loop routes an audio packet by its header
   before anything is logged or decoded, and hands it to the one consumer
   (`Coordinator::mic_audio`) over a channel of `mic::AUDIO_QUEUE` packets. One more is
-  dropped and counted (`Coordinator::mic_audio_dropped`), which the stop logs: the link's
-  other packets come on the same loop. Nothing logs each audio packet
+  dropped and counted (`Coordinator::mic_audio_dropped`), which the stop logs with those
+  PipeWire's thread had no room for ([Replies from the thread](#replies-from-the-thread)):
+  the link's other packets come on the same loop. Nothing logs each audio packet
   ([logging.md](logging.md#aap-packets)).
 - **Only the streaming pair's** audio reaches the source; the rest is dropped.
 - **Decoded on PipeWire's thread,** each access unit (`aap::mic::access_units`), and
@@ -171,8 +172,10 @@ FFmpeg of the app's own.
 
 The test `mic::pipewire::tests::serves_a_pipewire_of_its_own` runs it against a PipeWire
 daemon of its own ([protocol/linux/desktop.md](../protocol/linux/desktop.md#runs)).
-Where no daemon starts, or the test's recorder cannot be linked, it skips that part - but
-with `CI` set it fails instead, so CI never skips it unseen.
+Where no daemon starts, `PIPEWIRE_REMOTE` is set
+([protocol/linux/desktop.md](../protocol/linux/desktop.md#pipewire)), or the test's
+recorder cannot be linked, it skips that part - but with `CI` set it fails instead, so CI
+never skips it unseen.
 
 On a thread of its own (`mic::pipewire`), running PipeWire's loop: PipeWire's objects
 never leave the thread that made them, and its loop blocks. The task asks it things on a
@@ -186,15 +189,24 @@ from it on a tokio channel (`mic::AudioEvent`).
 - **Ended** when PipeWire goes or cannot be reached: the task starts it again on
   `bluez::Backoff`, as the tasks on the system bus do, while the switch is on - and,
   with the switch off, while the source is still the default input, so the one before
-  can be put back. With the switch off the row stays usable meanwhile. A put back that
-  did not reach PipeWire is asked of the next thread.
+  can be put back. With the switch off the row stays usable meanwhile.
+- **A put back counts** once the thread has answered a sync (`AudioRequest::Sync`) asked
+  right after it, as PipeWire takes requests in order; the thread is not asked to end
+  before. A thread that ends first, the put back still in its queue or its sync dropped,
+  leaves it to the next thread, which puts it back if the default input still names the
+  source. One not answered within `mic::SYNC_LIMIT` is given up, as from a thread that
+  hangs.
 
 ### Replies from the thread
 
 The requests wait on a queue the task's side and the thread share. A byte on a pipe, written
 as the queue stops being empty, wakes the thread's loop; the thread takes the whole queue
 under its lock and serves each request once the lock is let go, so an audio packet's decode
-never holds up the task. Not a `pw::channel`
+never holds up the task. At most `MAX_QUEUED_AUDIO` audio packets wait in it
+(`mic::pipewire`), about 0.5 s, more than `MAX_BUFFERED` keeps once decoded: one more is
+dropped, and counted into the figure the stop logs ([The audio](#the-audio)), so a thread
+that hangs does not grow the queue without end. No other request is ever dropped for room.
+Not a `pw::channel`
 ([protocol/linux/desktop.md](../protocol/linux/desktop.md#pipewire)), whose send would wait
 for every decode queued before it.
 
