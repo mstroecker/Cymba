@@ -6,11 +6,14 @@
 //! whose pause goes back to the scanner on a third - see `ScanControl`;
 //! commands go to the AirPods on their link's queue - see
 //! `Coordinator::command` - the switch for pausing on the ears to the media
-//! task on another watch, whether the user is at the desktop and the
-//! resumes from sleep to the nearby notifier on another, as one value, and
-//! the tray's window commands, the low battery and nearby notifications and
-//! a quit asked for by SIGTERM or SIGINT to the GTK main context on async
-//! channels.
+//! task on another watch, the microphone's switch to `mic::Mic` on another,
+//! and whether the microphone can be offered back to its Preferences row on
+//! another - see `MicControl::availability` - whether the user is at the
+//! desktop and the resumes from sleep to the nearby notifier on another, as
+//! one value, and the tray's window commands, the low battery and nearby
+//! notifications and a quit asked for by SIGTERM or SIGINT to the GTK main
+//! context on async channels. A third thread, PipeWire's, runs its loop for
+//! `mic::Mic`, which starts it and meets it over channels.
 
 use cymba::{
     APP_ID, attachment, ble, indicator, media, mic, migrate, nearby, notify, podstate, presence,

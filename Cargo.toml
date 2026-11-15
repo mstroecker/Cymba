@@ -61,11 +61,8 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# The microphone over AAP (#209): its source on PipeWire, and the system
-# FFmpeg's own AAC decoder, its libavcodec loaded when the app starts - so a
-# system without it, or with another soname, still runs the app (see
-# docs/app/mic.md). Optional: the `mic` feature brings them, so a build
-# without PipeWire's headers goes on without it.
+# The microphone over AAP (#209), behind the `mic` feature: PipeWire, and
+# libavcodec loaded once the switch is first turned on (docs/app/mic.md).
 pipewire = { version = "0.10", optional = true, features = ["v0_3_49"] }
 libloading = { version = "0.8", optional = true }
 

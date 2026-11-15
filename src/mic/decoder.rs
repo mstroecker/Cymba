@@ -1,14 +1,5 @@
-//! FFmpeg's own `aac` decoder, from the system's libavcodec, for the
-//! microphone's AAC-ELD frames - never `libfdk_aac`, and no FFmpeg of our
-//! own.
-//!
-//! libavcodec is loaded when first asked for, not linked: a release binary
-//! linked to one libavcodec soname would not start on a system with another,
-//! or none (`docs/app/mic.md#the-decoder`). Each soname from
-//! [`NEWEST_MAJOR`] down to [`OLDEST_MAJOR`] is tried, and the one that loads
-//! is used if its own version says the same major. Of FFmpeg's structures
-//! only the first fields of two are read or written here, which every major
-//! in that range shares; everything else goes through FFmpeg's functions.
+//! FFmpeg's own `aac` decoder for the microphone's frames, from the system's
+//! libavcodec loaded at runtime: `docs/app/mic.md#the-decoder`.
 
 // The calls into libavcodec, and the two structures' first fields, are FFI:
 // each block says what it relies on.
