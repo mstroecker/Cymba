@@ -7,6 +7,9 @@
 //! stateful action [`ACTION`]. It starts as `crate::settings` saved it - off
 //! unless turned on - and a change to it is saved there.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use adw::prelude::*;
 use gtk::{gio, glib};
 use tokio::sync::watch;
@@ -49,8 +52,9 @@ pub fn add_action(app: &impl IsA<gio::Application>, settings: Saver, switch: wat
 
 /// The row for the switch, bound to [`ACTION`], as the other settings'
 /// switches are to theirs. While the microphone cannot be offered - this
-/// build has none, no decoder, no PipeWire - the row is insensitive and says
-/// why, from `availability` as it changes; the switch keeps its state.
+/// build has none, no decoder, no PipeWire - the row says why, from
+/// `availability` as it changes, and is insensitive while the switch is
+/// off: one that is on can always be turned off.
 pub(super) fn row(availability: watch::Receiver<Availability>) -> adw::ActionRow {
     let switch = gtk::Switch::builder()
         .name("mic-over-aap")
@@ -64,39 +68,47 @@ pub(super) fn row(availability: watch::Receiver<Availability>) -> adw::ActionRow
         .activatable_widget(&switch)
         .build();
     row.add_suffix(&switch);
-    follow(&row, availability);
+    follow(&row, &switch, availability);
     row
 }
 
-/// What the row shows for `availability`: whether it is sensitive, and the
-/// line under its title.
-pub(super) fn shown(availability: &Availability) -> (bool, String) {
+/// What the row shows for `availability`, with the switch `on` or off:
+/// whether it is sensitive, and the line under its title.
+pub(super) fn shown(availability: &Availability, on: bool) -> (bool, String) {
     match availability {
         // Not asked yet: PipeWire is asked once the switch is on.
         Availability::Unknown | Availability::Available => (true, SUBTITLE.to_string()),
-        Availability::Unavailable(reason) => (false, format!("Not available: {reason}")),
+        Availability::Unavailable(reason) => (on, format!("Not available: {reason}")),
     }
 }
 
-/// Draws `row` from `availability` now, and again at every change, on the
-/// main context, until the row is gone.
-fn follow(row: &adw::ActionRow, mut availability: watch::Receiver<Availability>) {
-    let draw = |row: &adw::ActionRow, availability: &Availability| {
-        let (sensitive, subtitle) = shown(availability);
-        row.set_sensitive(sensitive);
-        row.set_subtitle(&subtitle);
-    };
-    // Cloned out: never held across an await.
-    let first = availability.borrow_and_update().clone();
-    draw(row, &first);
-    let weak = row.downgrade();
-    glib::spawn_future_local(async move {
-        while availability.changed().await.is_ok() {
-            let Some(row) = weak.upgrade() else {
+/// Draws `row` from `availability` and `switch` now, and again at every
+/// change of either, on the main context, until the row is gone.
+fn follow(
+    row: &adw::ActionRow,
+    switch: &gtk::Switch,
+    mut availability: watch::Receiver<Availability>,
+) {
+    // Cloned out of the watch: never held across an await.
+    let last = Rc::new(RefCell::new(availability.borrow_and_update().clone()));
+    let draw = {
+        let (row, switch, last) = (row.downgrade(), switch.downgrade(), last.clone());
+        move || {
+            let (Some(row), Some(switch)) = (row.upgrade(), switch.upgrade()) else {
                 return;
             };
-            let now = availability.borrow_and_update().clone();
-            draw(&row, &now);
+            let (sensitive, subtitle) = shown(&last.borrow(), switch.is_active());
+            row.set_sensitive(sensitive);
+            row.set_subtitle(&subtitle);
+        }
+    };
+    draw();
+    let redraw = draw.clone();
+    switch.connect_active_notify(move |_| redraw());
+    glib::spawn_future_local(async move {
+        while availability.changed().await.is_ok() {
+            *last.borrow_mut() = availability.borrow_and_update().clone();
+            draw();
         }
     });
 }
@@ -105,22 +117,21 @@ fn follow(row: &adw::ActionRow, mut availability: watch::Receiver<Availability>)
 mod tests {
     use super::*;
 
-    /// Unavailable, the row is insensitive and says why; otherwise it is
-    /// sensitive and says what the switch does.
+    /// Unavailable, the row says why, and is insensitive with the switch
+    /// off but not with it on; otherwise it is sensitive and says what the
+    /// switch does.
     #[test]
     fn says_why_it_is_not_offered() {
-        let (sensitive, subtitle) = shown(&Availability::Unavailable(
-            "this build has no microphone support".into(),
-        ));
+        let missing = Availability::Unavailable("this build has no microphone support".into());
+        let (sensitive, subtitle) = shown(&missing, false);
         assert!(!sensitive);
         assert_eq!(
             subtitle,
             "Not available: this build has no microphone support"
         );
-        assert_eq!(
-            shown(&Availability::Available),
-            (true, SUBTITLE.to_string())
-        );
-        assert_eq!(shown(&Availability::Unknown), (true, SUBTITLE.to_string()));
+        assert!(shown(&missing, true).0);
+        for availability in [Availability::Available, Availability::Unknown] {
+            assert_eq!(shown(&availability, false), (true, SUBTITLE.to_string()));
+        }
     }
 }

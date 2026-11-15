@@ -34,6 +34,7 @@ use crate::aap::ear::{EarReport, Place, ear_packet, primary_packet};
 use crate::aap::info;
 use crate::aap::keys::{KeyType, ProximityKey, key_packet};
 use crate::aap::message::HEADER;
+use crate::aap::mic::{self, AccessUnit};
 use crate::aap::name;
 use crate::aap::noise::{self, NoiseMode};
 use crate::ble::decrypt::{KEY_LEN, Plaintext, ZEROED_SUFFIX, encrypt, random_key};
@@ -81,6 +82,27 @@ pub const ECHO_DELAY: Duration = Duration::from_secs(1);
 /// How long after an Off its stale report of the mode it replaced comes, by
 /// default: 0.33 s in the #71 capture - see [`Quirks::stale_report`].
 pub const STALE_REPORT: Duration = Duration::from_millis(330);
+
+// The microphone over AAP, as the runs of #211 on a Pro 3 went
+// (`docs/protocol/aap/microphone.md`).
+
+/// From the start to its answer: 0.26-0.37 s in the runs.
+pub const MIC_ANSWER: Duration = Duration::from_millis(300);
+/// From the start to the first audio packet: 0.32-0.43 s in the runs.
+pub const MIC_FIRST_AUDIO: Duration = Duration::from_millis(350);
+/// Between audio packets: every 30 ms on average in the runs. The fake sends
+/// them evenly.
+pub const MIC_AUDIO_EVERY: Duration = Duration::from_millis(30);
+/// From the stop to its answer: 0.21-0.26 s in the runs. No audio comes
+/// after the stop, where the runs had one or two packets more.
+pub const MIC_STOP_ANSWER: Duration = Duration::from_millis(230);
+/// The timestamp of a stream's first access unit, as runs 1, 3 and 4 began,
+/// and its step per unit.
+const MIC_FIRST_TIMESTAMP: u32 = 900;
+const MIC_TIMESTAMP_STEP: u32 = 180;
+/// The frames the fake sends: 75 bytes each, about the runs' average, made
+/// up - no AAC-ELD decoder makes anything of them.
+const MIC_FRAME: [u8; 75] = [0x5A; 75];
 
 /// The last three bytes of the host the fake pods' advertisement names,
 /// whatever they connect to: `00:00:5E:00:53:E0`, from the block RFC 7042
@@ -592,6 +614,9 @@ struct Session {
     ears_reported: Option<Ears>,
     /// What waits for its time, in time order.
     scheduled: Vec<(Duration, Due)>,
+    /// The timestamp of the next access unit while the microphone runs,
+    /// `None` while it does not.
+    mic: Option<u32>,
 }
 
 /// Something a session has waiting for its time.
@@ -612,6 +637,9 @@ enum Due {
     SpeechTransparency,
     /// A stretch of speech over, switching them back.
     SpeechBack,
+    /// The microphone's next audio packet, and the one after it scheduled,
+    /// while it runs.
+    MicAudio,
 }
 
 /// A stretch of speech under way - see [`Pods::speak`].
@@ -1237,6 +1265,7 @@ impl Pods {
             mode: None,
             ears_reported: None,
             scheduled: Vec::new(),
+            mic: None,
         };
         if session.silent {
             session.schedule(now + SILENT_HANG_UP, Due::Act(Action::HangUp));
@@ -1304,6 +1333,8 @@ impl Pods {
     ///   either answers is not recorded, so the fake answers nothing.
     /// - a rename (0x1A) the pair's name, answering nothing, as a Pro 3
     ///   answered nothing (#160); the next connection's 0x1D carries it.
+    /// - the microphone's start and stop (0x58), answered, with audio
+    ///   between them - see `Pods::microphone`.
     ///
     /// Anything else is recorded and otherwise ignored, as is everything
     /// arriving with no connection open or on a silent one.
@@ -1322,6 +1353,7 @@ impl Pods {
             Some(OP_NOTIFICATIONS) => self.start_notifications(now),
             Some(OP_KEY_REQUEST) => self.send(now, self.key_packet()),
             Some(name::RENAME_OPCODE) => self.rename(packet),
+            Some(mic::OPCODE) => self.microphone(packet, now),
             _ => self.settings_command(packet, now),
         }
     }
@@ -1404,6 +1436,20 @@ impl Pods {
                 }
                 Due::SpeechBack => {
                     switched = self.speaking.as_mut().and_then(|s| s.back_to.take());
+                }
+                Due::MicAudio => {
+                    if let Some(next) = session.mic {
+                        let units: Vec<AccessUnit<'_>> = (0..4)
+                            .map(|n| AccessUnit {
+                                timestamp: next + n * MIC_TIMESTAMP_STEP,
+                                frame: &MIC_FRAME,
+                            })
+                            .collect();
+                        let clock = u32::try_from(now.as_millis()).unwrap_or(u32::MAX);
+                        actions.push(Action::Send(mic::audio_packet(clock, &units)));
+                        session.mic = Some(next + 4 * MIC_TIMESTAMP_STEP);
+                        session.schedule(now + MIC_AUDIO_EVERY, Due::MicAudio);
+                    }
                 }
             }
             // Reported in its place among what falls due, where the report
@@ -1644,6 +1690,32 @@ impl Pods {
             return;
         }
         self.name = given[..given.len().min(NAME_KEPT)].to_vec();
+    }
+
+    /// The microphone's start or stop: answered as a Pro 3 answered, and
+    /// audio every [`MIC_AUDIO_EVERY`] from [`MIC_FIRST_AUDIO`] after the
+    /// start until the stop. A start while it runs, or a stop while it does
+    /// not, is answered and changes nothing.
+    fn microphone(&mut self, packet: &[u8], now: Duration) {
+        let Some(session) = &mut self.session else {
+            return;
+        };
+        if packet == mic::START {
+            session.send(now + MIC_ANSWER, mic::answer_packet(false));
+            if session.mic.is_none() {
+                session.mic = Some(MIC_FIRST_TIMESTAMP);
+                session.schedule(now + MIC_FIRST_AUDIO, Due::MicAudio);
+            }
+        } else if packet == mic::STOP {
+            session.mic = None;
+            session.scheduled.retain(|(_, due)| *due != Due::MicAudio);
+            session.send(now + MIC_STOP_ANSWER, mic::answer_packet(true));
+        }
+    }
+
+    /// Whether the microphone runs: started over AAP, and not stopped.
+    pub fn mic_running(&self) -> bool {
+        self.session.as_ref().is_some_and(|s| s.mic.is_some())
     }
 
     /// A command in the 0x09 settings family.
@@ -2686,6 +2758,50 @@ mod tests {
             packets.extend(sent(&pods.poll(at)).into_iter().map(|p| (at, p)));
         }
         packets
+    }
+
+    /// The microphone as a Pro 3 ran it: the start answered, audio every
+    /// 30 ms from 0.35 s on, each packet four units whose timestamps go up
+    /// by 180 from 900; the stop answered, and no audio after it.
+    #[test]
+    fn the_microphone_runs_from_the_start_to_the_stop() {
+        let mut pods = subscribed();
+        timeline(&mut pods, ms(0), ms(1000));
+        let start = ms(1000);
+        pods.receive(&mic::START, start);
+        assert!(pods.mic_running());
+        let packets = timeline(&mut pods, start, start + ms(420));
+        let started: Vec<u8> = vec![
+            0x04, 0x00, 0x04, 0x00, 0x58, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01, 0x01, 0x01,
+        ];
+        assert_eq!(packets[0], (start + ms(300), started));
+        let audio: Vec<_> = packets[1..]
+            .iter()
+            .map(|(at, packet)| {
+                assert!(mic::is_audio_packet(packet));
+                let stamps: Vec<u32> = mic::access_units(packet).map(|u| u.timestamp).collect();
+                (*at, stamps)
+            })
+            .collect();
+        assert_eq!(
+            audio,
+            [
+                (start + ms(350), vec![900, 1080, 1260, 1440]),
+                (start + ms(380), vec![1620, 1800, 1980, 2160]),
+                (start + ms(410), vec![2340, 2520, 2700, 2880]),
+            ]
+        );
+
+        let stop = start + ms(420);
+        pods.receive(&mic::STOP, stop);
+        assert!(!pods.mic_running());
+        let stopped: Vec<u8> = vec![
+            0x04, 0x00, 0x04, 0x00, 0x58, 0x00, 0x00, 0x00, 0x02, 0x00, 0x04, 0x01,
+        ];
+        assert_eq!(
+            timeline(&mut pods, stop, stop + ms(2000)),
+            [(stop + ms(230), stopped)]
+        );
     }
 
     /// The first stretch of the #150 run, 6.36 s of speech: level 01, the
