@@ -53,37 +53,27 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use bluer::Address;
 use cymba::aap::conversation::describe_level;
-use cymba::aap::{Client, Message, decode, keys};
+use cymba::aap::{Client, Message, decode, keys, mic};
 use cymba::hex;
 use cymba::media::{self, Playback};
 use cymba::volume::find_a2dp;
 use tokio::time::Instant;
 use zbus::Connection;
 
-/// LibrePods' packet that starts the microphone stream.
-const START_AUDIO: [u8; 19] = [
-    0x04, 0x00, 0x04, 0x00, 0x58, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x01, 0x82, 0x00, 0x00, 0x00,
-    0x04, 0x96, 0x00,
-];
-
-/// LibrePods' packet that stops it.
-const STOP_AUDIO: [u8; 12] = [
-    0x04, 0x00, 0x04, 0x00, 0x58, 0x00, 0x00, 0x00, 0x02, 0x00, 0x03, 0x01,
-];
-
-/// What an audio packet starts with.
-const AUDIO_PREFIX: [u8; 8] = [0x04, 0x00, 0x04, 0x00, 0x58, 0x00, 0x01, 0x00];
+// The packets that start and stop the stream, LibrePods', as the app sends
+// them.
+use cymba::aap::mic::{START as START_AUDIO, STOP as STOP_AUDIO};
 
 /// The bytes before the first access unit.
-const HEADER_LEN: usize = 22;
+const HEADER_LEN: usize = mic::AUDIO_HEADER_LEN;
 
 /// The AudioSpecificConfig LibrePods gives the decoder: AAC-ELD, 48 kHz,
 /// mono, 480 samples a frame. The frames come at 64 kHz's pace on a Pro 3:
 /// `docs/protocol/aap/microphone.md`, The audio.
-const ASC: [u8; 4] = [0xF8, 0xE6, 0x30, 0x00];
+const ASC: [u8; 4] = mic::AUDIO_SPECIFIC_CONFIG;
 
 /// Samples in a frame, as the AudioSpecificConfig says.
-const FRAME_SAMPLES: u64 = 480;
+const FRAME_SAMPLES: u64 = mic::FRAME_SAMPLES as u64;
 
 /// The rate the AudioSpecificConfig gives.
 const ASC_RATE: u64 = 48_000;
@@ -128,21 +118,15 @@ const AFTER_STOP: Duration = Duration::from_secs(5);
 /// How long after the start the A2DP transport is read again.
 const A2DP_CHECK: Duration = Duration::from_secs(2);
 
-/// Every access unit of an audio packet: the timestamp and the bytes. Also the bytes left over that make no whole unit.
+/// Every access unit of an audio packet: the timestamp and the bytes. Also
+/// the bytes left over that make no whole unit.
 fn access_units(packet: &[u8]) -> (Vec<(u32, &[u8])>, usize) {
-    let mut units = Vec::new();
-    let mut off = HEADER_LEN;
-    while off + 5 <= packet.len() {
-        let ts = u32::from_le_bytes(packet[off..off + 4].try_into().expect("4 bytes"));
-        let len = usize::from(packet[off + 4]);
-        let end = off + 5 + len;
-        if end > packet.len() {
-            break;
-        }
-        units.push((ts, &packet[off + 5..end]));
-        off = end;
-    }
-    (units, packet.len().saturating_sub(off))
+    let mut read = mic::access_units(packet);
+    let units = read
+        .by_ref()
+        .map(|unit| (unit.timestamp, unit.frame))
+        .collect();
+    (units, read.leftover())
 }
 
 /// What was seen of the audio packets.
@@ -869,7 +853,7 @@ async fn main() -> anyhow::Result<()> {
                 break;
             }
             Event::Packet(Ok(packet)) => {
-                if packet.starts_with(&AUDIO_PREFIX) {
+                if mic::is_audio_packet(&packet) {
                     if !matches!(phase, Phase::Recording { .. }) {
                         after_stop += 1;
                         continue;
