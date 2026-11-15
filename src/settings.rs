@@ -3,7 +3,7 @@
 //!
 //! Stored at ~/.config/cymba/settings.json (XDG Base Directory):
 //! {"version": 1, "battery_notifications": true, "pause_on_ear": true,
-//!  "nearby_notifications": true}
+//!  "nearby_notifications": true, "mic_over_aap": false}
 //!
 //! Every field has a default, and a missing field takes it, so a file from an
 //! older build loads. A field this build does not know is kept as it was read
@@ -53,6 +53,10 @@ pub struct Settings {
     /// Whether a known pair nearby again is notified, with a Connect
     /// button - see `crate::nearby`. On by default.
     pub nearby_notifications: bool,
+    /// Whether the pods' microphone is offered as an input over AAP - see
+    /// `crate::mic`. Off by default: experimental, and it switches the
+    /// pair's card off and back after every recording.
+    pub mic_over_aap: bool,
     /// The fields this build does not know, from a newer build's file: kept
     /// and saved again as they were, so a change made here does not drop
     /// that build's settings.
@@ -67,6 +71,7 @@ impl Default for Settings {
             battery_notifications: true,
             pause_on_ear: true,
             nearby_notifications: true,
+            mic_over_aap: false,
             extra: Map::new(),
         }
     }
@@ -413,6 +418,19 @@ mod tests {
         assert!(settings.pause_on_ear);
     }
 
+    /// A file without the setting leaves the microphone off, and one that
+    /// turned it on keeps it on, with the settings it leaves out at their
+    /// defaults.
+    #[test]
+    fn the_microphone_loads_as_saved() {
+        let (store, _dir) = store_with(r#"{"version":1,"pause_on_ear":false}"#);
+        assert!(!store.load().mic_over_aap);
+        let (store, _dir) = store_with(r#"{"version":1,"mic_over_aap":true}"#);
+        let settings = store.load();
+        assert!(settings.mic_over_aap);
+        assert!(settings.pause_on_ear);
+    }
+
     #[test]
     fn a_missing_file_means_the_defaults_and_writes_nothing() {
         let (store, dir) = store();
@@ -469,6 +487,7 @@ mod tests {
                 "battery_notifications": true,
                 "pause_on_ear": true,
                 "nearby_notifications": true,
+                "mic_over_aap": false,
                 "auto_connect": true,
                 "x": {"y": [1]},
             })
@@ -490,6 +509,7 @@ mod tests {
                 "battery_notifications": false,
                 "pause_on_ear": true,
                 "nearby_notifications": true,
+                "mic_over_aap": false,
             })
         );
     }
@@ -543,6 +563,7 @@ mod tests {
                 "battery_notifications": true,
                 "pause_on_ear": true,
                 "nearby_notifications": true,
+                "mic_over_aap": false,
             })
         );
     }

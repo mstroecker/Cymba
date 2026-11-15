@@ -30,6 +30,7 @@ mod automation;
 mod connect;
 mod control;
 mod media;
+mod mic;
 mod notifications;
 mod preferences;
 mod rename;
@@ -40,6 +41,7 @@ mod window;
 pub use automation::register as register_automation;
 pub use connect::{Connecting, add_action as add_connect};
 pub use media::add_action as add_pause_on_ear;
+pub use mic::add_action as add_mic;
 pub use notifications::{deliver as deliver_notifications, deliver_nearby};
 pub use window::activate;
 

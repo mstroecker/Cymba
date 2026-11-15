@@ -6,16 +6,20 @@ use std::collections::HashMap;
 
 use adw::prelude::*;
 use bluer::Address;
+use tokio::sync::watch;
 
 use super::scanning::ScanHint;
 use super::{RECENT, last_seen_text, shown_age, unavailable_row};
 use crate::ble::scanner::ScanControl;
+use crate::mic::Availability;
 use crate::podstate::{PodState, Snapshot};
 
 /// The Preferences dialog, its scanning hint, whose button asks `scan` for a
-/// pause, and its Development group for the update loop to fill.
+/// pause, the microphone's switch, which `mic` says whether it can be
+/// offered, and its Development group for the update loop to fill.
 pub(super) fn create_preferences_dialog(
     scan: ScanControl,
+    mic: watch::Receiver<Availability>,
 ) -> (adw::PreferencesDialog, ScanHint, DeviceRows) {
     let page = adw::PreferencesPage::new();
 
@@ -30,6 +34,7 @@ pub(super) fn create_preferences_dialog(
     settings_group.add(&battery_notifications_row());
     settings_group.add(&nearby_notifications_row());
     settings_group.add(&pause_on_ear_row());
+    settings_group.add(&super::mic::row(mic));
     page.add(&settings_group);
 
     let dev_group = adw::PreferencesGroup::builder()

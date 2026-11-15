@@ -19,6 +19,7 @@ use super::control::{
 };
 use super::preferences::{DeviceRows, create_preferences_dialog};
 use crate::ble::scanner::ScanControl;
+use crate::mic::Availability;
 use crate::podstate::{Command, ConnectionLost, Coordinator, Snapshot};
 
 /// Shortest gap between two renders. Readings change over minutes, while a
@@ -28,13 +29,15 @@ const RENDER_INTERVAL: Duration = Duration::from_millis(100);
 const WEBSITE: &str = "https://github.com/mstroecker/Cymba";
 
 /// Builds the window and wires it to the coordinator, Preferences' scanning
-/// hint to `scan`, and the connect banner and spinner to `connecting`. The
+/// hint to `scan`, the connect banner and spinner to `connecting`, and the
+/// microphone's switch to `mic`, which says whether it can be offered. The
 /// caller presents it, so that `--minimized` can leave it built but hidden.
 pub fn activate(
     app: &adw::Application,
     coordinator: Arc<Coordinator>,
     scan: ScanControl,
     connecting: Connecting,
+    mic: watch::Receiver<Availability>,
 ) -> adw::ApplicationWindow {
     let updates = Rc::new(RefCell::new(coordinator.subscribe()));
     let scan_updates = Rc::new(RefCell::new(scan.state()));
@@ -51,7 +54,7 @@ pub fn activate(
     win.set_hide_on_close(true);
 
     let control = create_control_view();
-    let (prefs, scan_hint, devices) = create_preferences_dialog(scan);
+    let (prefs, scan_hint, devices) = create_preferences_dialog(scan, mic);
     let toasts = setup_ui(&win, &control);
 
     // The primary menu's entries. Preferences is built once and kept, since the
