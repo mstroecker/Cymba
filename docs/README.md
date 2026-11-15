@@ -27,7 +27,8 @@ What AirPods send and take, and how the Linux stack under the app behaves. Writt
 that someone building another client can use it without reading our code.
 
 - `aap/` - the Apple Accessory Protocol over L2CAP: the session, keys, battery, ear,
-  noise control, the `0x09` settings, Conversation Awareness, device information, rename
+  noise control, the `0x09` settings, Conversation Awareness, device information, rename,
+  the microphone
 - `ble/` - Apple's proximity pairing advertisements, and the addresses they come from
 - `linux/` - the kernel's L2CAP and LE scanning, bluetoothd, zbus, and the desktop around
   them (MPRIS, PipeWire, UPower, GApplication, GNOME Shell's notifications, logind,

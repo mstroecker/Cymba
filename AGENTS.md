@@ -510,6 +510,7 @@ A `Co-Authored-By:` trailer is fine.
 - [`conversation-awareness.md`](docs/protocol/aap/conversation-awareness.md) - the `0x28` setting, the speech levels (`0x4B`)
 - [`device-info.md`](docs/protocol/aap/device-info.md) - the device information packet (`0x1D`), the firmware version
 - [`rename.md`](docs/protocol/aap/rename.md) - the rename packet (`0x1A`), the pods' name, 127 bytes
+- [`microphone.md`](docs/protocol/aap/microphone.md) - the microphone (`0x58`): start and stop, the audio packets, AAC-ELD frames at 64 kHz's pace, one pod silent after a stop
 
 [`docs/protocol/ble/`](docs/protocol/ble/) - the advertisements:
 - [`proximity-pairing.md`](docs/protocol/ble/proximity-pairing.md) - the payload, decryption, the suffix
