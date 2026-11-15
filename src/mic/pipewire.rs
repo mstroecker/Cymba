@@ -53,16 +53,16 @@ use crate::aap::mic;
 const MAX_BUFFERED: usize = mic::SAMPLE_RATE as usize / 5;
 
 /// The samples gathered before the source plays any, after it started or
-/// ran dry: two audio packets' worth, so that packets coming in bursts
-/// (`docs/protocol/aap/microphone.md`, Audio: `0x58 01 00`) do not run it
-/// dry at once. A choice.
+/// ran dry: two audio packets' worth, so that packets that do not come
+/// evenly do not run it dry at once (the spacing a guess:
+/// `docs/protocol/aap/microphone.md`, Audio: `0x58 01 00`). A choice.
 const PREFILL: usize = 2 * 4 * mic::FRAME_SAMPLES;
 
-/// The audio packets waiting in the queue at most: 16, about 0.5 s at the
-/// pace they came at (`docs/protocol/aap/microphone.md`, Audio:
-/// `0x58 01 00`). More than [`MAX_BUFFERED`] keeps once decoded, so a
-/// thread that is only slow loses nothing the source would play; one that
-/// hangs no longer grows the queue without end. One more is dropped, and
+/// The audio packets waiting in the queue at most: 16, about 0.5 s of
+/// audio at four frames of 480 samples a packet
+/// (`docs/protocol/aap/microphone.md`). More than [`MAX_BUFFERED`] keeps once
+/// decoded, so a thread that is only slow loses nothing the source would
+/// play; one that hangs does not grow the queue without end. One more is dropped, and
 /// the task counts it. A choice.
 const MAX_QUEUED_AUDIO: usize = 16;
 
@@ -280,7 +280,14 @@ struct State {
     decoder: Option<Decoder>,
     /// Frames that did not decode since the source last started streaming.
     undecoded: u64,
-    metadata: Option<(Metadata, MetadataListener)>,
+    /// The `default` metadata, while it is there.
+    metadata: Option<BoundMetadata>,
+    /// The sync asked after the metadata was bound: once it is answered,
+    /// every property the metadata had then has been read.
+    metadata_sync: Option<i32>,
+    /// Whether the metadata's properties have been read: until then, and
+    /// without it, the default input is not known.
+    metadata_read: bool,
     cards: HashMap<u32, Card>,
     profiles: Rc<RefCell<HashMap<u32, Profiles>>>,
     switch: Option<Switch>,
@@ -288,6 +295,23 @@ struct State {
     ready: bool,
     /// The default input as last read.
     configured: Option<String>,
+}
+
+impl State {
+    /// The default input as read, for [`AudioEvent::Ready`]: `None` until
+    /// the metadata's properties are read.
+    fn default_input(&self) -> Option<Option<String>> {
+        self.metadata_read.then(|| self.configured.clone())
+    }
+}
+
+/// The `default` metadata, bound.
+struct BoundMetadata {
+    /// Its global's ID, for its removal.
+    id: u32,
+    // The listener goes first, so the proxy's going tells nothing.
+    _listener: MetadataListener,
+    metadata: Metadata,
 }
 
 /// Connects to PipeWire and serves the task until the connection ends or
@@ -329,8 +353,16 @@ fn serve(
                     return;
                 }
                 // Every global announced, then every property of the
-                // metadata bound meanwhile: ready.
-                if first.get() == Some(seq.seq()) {
+                // metadata bound meanwhile: ready. The metadata's
+                // properties read, whenever it came: told once ready.
+                if state.borrow().metadata_sync == Some(seq.seq()) {
+                    let mut state = state.borrow_mut();
+                    state.metadata_sync = None;
+                    state.metadata_read = true;
+                    if state.ready {
+                        let _ = events.send(AudioEvent::Default(state.default_input()));
+                    }
+                } else if first.get() == Some(seq.seq()) {
                     first.set(None);
                     if let Some(core) = core_weak.upgrade() {
                         second.set(core.sync(0).ok().map(|s| s.seq()));
@@ -340,7 +372,7 @@ fn serve(
                     let mut state = state.borrow_mut();
                     state.ready = true;
                     let _ = events.send(AudioEvent::Ready {
-                        default: state.configured.clone(),
+                        default: state.default_input(),
                     });
                 } else if let Some(waiting) =
                     PENDING_SYNCS.with(|p| p.borrow_mut().remove(&seq.seq()))
@@ -353,8 +385,8 @@ fn serve(
 
     let _registry_listener = {
         let registry_weak = registry.downgrade();
-        let (state, events) = (state.clone(), events.clone());
-        let removed_state = state.clone();
+        let (state, events, core) = (state.clone(), events.clone(), core.clone());
+        let (removed_state, removed_events) = (state.clone(), events.clone());
         registry
             .add_listener_local()
             .global(move |global| {
@@ -366,7 +398,7 @@ fn serve(
                     ObjectType::Metadata
                         if props.and_then(|p| p.get("metadata.name")) == Some("default") =>
                     {
-                        bind_metadata(&registry, global, &state, &events);
+                        bind_metadata(&registry, &core, global, &state, &events);
                     }
                     ObjectType::Device
                         if props.and_then(|p| p.get("device.api")) == Some("bluez5") =>
@@ -379,6 +411,9 @@ fn serve(
                 }
             })
             .global_remove(move |id| {
+                let gone = metadata_removed(id, &removed_state, &removed_events);
+                // Out of the borrow, as anything going may tell.
+                drop(gone);
                 let mut state = removed_state.borrow_mut();
                 state.cards.remove(&id);
                 state.profiles.borrow_mut().remove(&id);
@@ -460,10 +495,12 @@ thread_local! {
     static PENDING_SYNCS: RefCell<HashMap<i32, oneshot::Sender<()>>> = RefCell::default();
 }
 
-/// Binds the `default` metadata, and tells every change to the default
-/// input once ready.
+/// Binds the `default` metadata, in place of one bound before, and asks a
+/// sync, whose answer says its properties are read. Once ready, the default
+/// input is told then, and at every change after.
 fn bind_metadata(
     registry: &pw::registry::Registry,
+    core: &pw::core::CoreRc,
     global: &pw::registry::GlobalObject<&spa::utils::dict::DictRef>,
     state: &Rc<RefCell<State>>,
     events: &mpsc::UnboundedSender<AudioEvent>,
@@ -491,13 +528,53 @@ fn bind_metadata(
                 None => state.configured = None,
                 Some(_) => return 0,
             }
-            if state.ready {
-                let _ = events.send(AudioEvent::Default(state.configured.clone()));
+            if state.ready && state.metadata_read {
+                let _ = events.send(AudioEvent::Default(state.default_input()));
             }
             0
         })
         .register();
-    state.borrow_mut().metadata = Some((metadata, listener));
+    let sync = match core.sync(0) {
+        Ok(seq) => Some(seq.seq()),
+        Err(e) => {
+            tracing::warn!("PipeWire did not take a sync after the default metadata: {e}");
+            None
+        }
+    };
+    let before = {
+        let mut state = state.borrow_mut();
+        state.metadata_read = false;
+        state.metadata_sync = sync;
+        state.configured = None;
+        state.metadata.replace(BoundMetadata {
+            id: global.id,
+            _listener: listener,
+            metadata,
+        })
+    };
+    // Out of the borrow, as anything going may tell.
+    drop(before);
+}
+
+/// The global `id` removed: if it was the `default` metadata, the default
+/// input is not known until another comes. Hands back the metadata, to be
+/// dropped out of the state's borrow.
+fn metadata_removed(
+    id: u32,
+    state: &Rc<RefCell<State>>,
+    events: &mpsc::UnboundedSender<AudioEvent>,
+) -> Option<BoundMetadata> {
+    let mut state = state.borrow_mut();
+    if state.metadata.as_ref().is_none_or(|bound| bound.id != id) {
+        return None;
+    }
+    state.metadata_read = false;
+    state.metadata_sync = None;
+    state.configured = None;
+    if state.ready {
+        let _ = events.send(AudioEvent::Default(None));
+    }
+    state.metadata.take()
 }
 
 /// The node name in a default's value, `{ "name": "..." }`.
@@ -516,7 +593,7 @@ fn bind_card(
     let device: Device = match registry.bind(global) {
         Ok(device) => device,
         Err(e) => {
-            tracing::debug!("PipeWire's card for {address} could not be bound: {e}");
+            tracing::debug!("A Bluetooth card of PipeWire's could not be bound: {e}");
             return;
         }
     };
@@ -885,7 +962,7 @@ fn decode(packet: &[u8], state: &Rc<RefCell<State>>, ring: &Rc<RefCell<Ring>>) {
 /// Sets the default input to the node `name`, or clears it.
 fn set_default(name: Option<&str>, state: &Rc<RefCell<State>>) {
     let state = state.borrow();
-    let Some((metadata, _)) = &state.metadata else {
+    let Some(BoundMetadata { metadata, .. }) = &state.metadata else {
         tracing::warn!("PipeWire has no default metadata: the default input stays as it is");
         return;
     };
@@ -938,12 +1015,26 @@ context.objects = [
 ]
 "#;
 
+    /// The `default` metadata in [`DAEMON_CONF`], the daemon's own.
+    const DAEMON_METADATA: &str = "    { factory = metadata args = { metadata.name = default } }\n";
+
     impl Daemon {
         /// The daemon, up; `None` where PipeWire's daemon is not installed.
         fn start() -> Option<Self> {
+            Self::start_with(DAEMON_CONF)
+        }
+
+        /// The daemon with no `default` metadata of its own, up.
+        fn start_without_metadata() -> Option<Self> {
+            assert!(DAEMON_CONF.contains(DAEMON_METADATA));
+            Self::start_with(&DAEMON_CONF.replace(DAEMON_METADATA, ""))
+        }
+
+        /// The daemon loading `conf`, up.
+        fn start_with(conf_text: &str) -> Option<Self> {
             let dir = tempfile::tempdir().unwrap();
             let conf = dir.path().join("daemon.conf");
-            std::fs::write(&conf, DAEMON_CONF).unwrap();
+            std::fs::write(&conf, conf_text).unwrap();
             let child = Self::command_in(&dir, "pipewire")
                 .arg("-c")
                 .arg(&conf)
@@ -1092,7 +1183,12 @@ context.objects = [
         runtime.block_on(async {
             let (events_tx, mut events) = mpsc::unbounded_channel();
             let side = start_at(Some(daemon.socket()), events_tx);
-            assert_eq!(next(&mut events).await, AudioEvent::Ready { default: None });
+            assert_eq!(
+                next(&mut events).await,
+                AudioEvent::Ready {
+                    default: Some(None)
+                }
+            );
 
             assert!(side.ask(AudioRequest::Source(true)));
             sync(&*side).await;
@@ -1144,10 +1240,10 @@ context.objects = [
             assert!(side.ask(AudioRequest::SetDefault(Some(NODE_NAME.into()))));
             assert_eq!(
                 next(&mut events).await,
-                AudioEvent::Default(Some(NODE_NAME.into()))
+                AudioEvent::Default(Some(Some(NODE_NAME.into())))
             );
             assert!(side.ask(AudioRequest::SetDefault(None)));
-            assert_eq!(next(&mut events).await, AudioEvent::Default(None));
+            assert_eq!(next(&mut events).await, AudioEvent::Default(Some(None)));
 
             let (done, switched) = oneshot::channel();
             let mac = Address::new([0x02, 0, 0, 0, 0, 1]);
@@ -1172,6 +1268,135 @@ context.objects = [
             let (done, answer) = oneshot::channel();
             assert!(!side.ask(AudioRequest::Sync(done)));
             answer.await.expect_err("nothing answers once gone");
+        });
+    }
+
+    /// A `default` metadata another client exports to PipeWire, as
+    /// WirePlumber does (`docs/protocol/linux/desktop.md#pipewire`): kept in
+    /// that client, there until dropped, which disconnects the client.
+    struct ClientMetadata {
+        quit: pw::channel::Sender<()>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl ClientMetadata {
+        /// The metadata, exported to the daemon at `socket`, once PipeWire
+        /// has it.
+        // pipewire-rs has no safe way to make a metadata of a client's own
+        // and export it: libpipewire's own calls, as WirePlumber makes them.
+        #[allow(unsafe_code)]
+        fn make(socket: String) -> Self {
+            let (quit, quitting) = pw::channel::channel();
+            let (made, has) = std::sync::mpsc::channel();
+            let thread = std::thread::spawn(move || {
+                pw::init();
+                let main_loop = pw::main_loop::MainLoopRc::new(None).unwrap();
+                let context = pw::context::ContextRc::new(&main_loop, None).unwrap();
+                let core = context
+                    .connect_rc(Some(properties! { *pw::keys::REMOTE_NAME => socket }))
+                    .unwrap();
+                let props = properties! { "metadata.name" => "default" };
+                // SAFETY: the context and the core are live; the metadata is
+                // destroyed below, after the core that exported it, and
+                // before the context that made it.
+                let metadata = unsafe {
+                    pw::sys::pw_context_create_metadata(
+                        context.as_raw_ptr(),
+                        c"default".as_ptr(),
+                        std::ptr::null_mut(),
+                        0,
+                    )
+                };
+                assert!(!metadata.is_null(), "no metadata");
+                // SAFETY: as above; `props` is copied by the call.
+                let exported = unsafe {
+                    pw::sys::pw_core_export(
+                        core.as_raw_ptr(),
+                        c"PipeWire:Interface:Metadata".as_ptr(),
+                        props.dict().as_raw_ptr().cast(),
+                        pw::sys::pw_impl_metadata_get_implementation(metadata).cast(),
+                        0,
+                    )
+                };
+                assert!(!exported.is_null(), "the metadata not exported");
+                let seq = core.sync(0).unwrap();
+                let _done = core
+                    .add_listener_local()
+                    .done(move |id, done| {
+                        if id == pw::sys::PW_ID_CORE && done == seq {
+                            let _ = made.send(());
+                        }
+                    })
+                    .register();
+                let _quitting = quitting.attach(main_loop.loop_(), {
+                    let main_loop = main_loop.downgrade();
+                    move |()| {
+                        if let Some(main_loop) = main_loop.upgrade() {
+                            main_loop.quit();
+                        }
+                    }
+                });
+                main_loop.run();
+                drop(_done);
+                drop(core);
+                // SAFETY: made above, destroyed once.
+                unsafe { pw::sys::pw_impl_metadata_destroy(metadata) };
+            });
+            has.recv_timeout(Duration::from_secs(10))
+                .expect("the metadata made in time");
+            Self {
+                quit,
+                thread: Some(thread),
+            }
+        }
+    }
+
+    impl Drop for ClientMetadata {
+        fn drop(&mut self) {
+            let _ = self.quit.send(());
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    /// Against a PipeWire with no `default` metadata at first, as before
+    /// WirePlumber makes it: ready with the default input not read; once
+    /// another client makes the metadata, with no default input in it, the
+    /// default input is told as none, and a change to it after as that;
+    /// once that client goes, and the metadata with it, the default input
+    /// is told as not read.
+    #[test]
+    fn reads_the_default_input_once_the_metadata_comes() {
+        if std::env::var_os("PIPEWIRE_REMOTE").is_some() {
+            untried("PIPEWIRE_REMOTE is set, which the test's own client would connect to");
+            return;
+        }
+        let Some(daemon) = Daemon::start_without_metadata() else {
+            return;
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let (events_tx, mut events) = mpsc::unbounded_channel();
+            let side = start_at(Some(daemon.socket()), events_tx);
+            assert_eq!(next(&mut events).await, AudioEvent::Ready { default: None });
+
+            let metadata = ClientMetadata::make(daemon.socket());
+            assert_eq!(next(&mut events).await, AudioEvent::Default(Some(None)));
+            assert!(side.ask(AudioRequest::SetDefault(Some(NODE_NAME.into()))));
+            assert_eq!(
+                next(&mut events).await,
+                AudioEvent::Default(Some(Some(NODE_NAME.into())))
+            );
+
+            drop(metadata);
+            assert_eq!(next(&mut events).await, AudioEvent::Default(None));
+            assert!(side.ask(AudioRequest::Quit));
+            loop {
+                if let AudioEvent::Gone(_) = next(&mut events).await {
+                    break;
+                }
+            }
         });
     }
 

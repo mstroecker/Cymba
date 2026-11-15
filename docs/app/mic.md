@@ -92,6 +92,14 @@ microphone" takes it, as a phone call would on the pods. The default input is Pi
   again until it has gone and come back, as `volume` leaves a volume the user moved.
 - **A default naming the source** when it comes up - a quit that did not put it back - is
   not remembered as the one before.
+- **Nothing is decided until the default input reads.** It is read from the `default`
+  metadata, which WirePlumber makes, and takes away as it goes
+  ([protocol/linux/desktop.md](../protocol/linux/desktop.md#pipewire)): a thread that
+  connects before WirePlumber has made it, or one whose metadata went, reads no default
+  input. That is neither the one before nor the user's choice: the source is made the
+  default input, and a put back asked or given up, only once the metadata is there and
+  read. A put back not read back when the metadata goes may not have reached it, and is
+  asked again as for a thread that ended.
 - **The one before is kept until the default input reads it put back,** whatever comes
   between. A sync answered says PipeWire has the put back, not that the session manager
   has told it ([protocol/linux/desktop.md](../protocol/linux/desktop.md#pipewire)), so
@@ -100,10 +108,10 @@ microphone" takes it, as a phone call would on the pods. The default input is Pi
     the default input still reading the source: the one before is the put back's, not
     none. The put back read back after, and the source after it, are not the user's
     choice.
-  - **A put back that may be lost** - its thread ended, or its sync not answered within
-    `mic::SYNC_LIMIT` ([The PipeWire side](#the-pipewire-side)) - is asked again while
-    the default input reads the source with the source down. Read back as put back,
-    by the next thread too, it is done, and not the user's choice.
+    - **A put back that may be lost** - its thread ended, or taken to hang
+    ([The PipeWire side](#the-pipewire-side)), or the metadata gone - is asked again, of
+    the next thread, while the default input reads the source with the source down. Read
+    back as put back, by the next thread too, it is done, and not the user's choice.
   - **Another input read** is the user's choice, and ends it.
 
 ## The card switch
@@ -164,8 +172,9 @@ With nothing playing before, the switch is done after step 2.
   ([protocol/aap/microphone.md](../protocol/aap/microphone.md#open-questions)).
 - **`MAX_BUFFERED` samples at most wait** for the source (`mic::pipewire`); older ones
   go. After it starts or runs dry, the source plays nothing until `PREFILL` samples are in,
-  so packets that come in bursts do not run it dry at once. A frame that does not decode is counted and logged when the
-  recording ends.
+  so that packets that do not come evenly do not run it dry at once (the spacing a guess:
+  [protocol/aap/microphone.md](../protocol/aap/microphone.md), Audio: `0x58 01 00`). A
+  frame that does not decode is counted and logged when the recording ends.
 
 ## The decoder
 
@@ -198,7 +207,10 @@ from it on a tokio channel (`mic::AudioEvent`).
 - **The source** is a stream with `media.class` `Audio/Source`, `node.name`
   `cymba.airpods_mic` (`mic::NODE_NAME`), one channel at 64 kHz.
 - **Ready** once two round trips are done: every object announced, then the `default`
-  metadata's properties read. The default input read then is the one the task starts from.
+  metadata's properties read. The default input read then is the one the task starts from;
+  with no `default` metadata yet, none is read ([The default input](#the-default-input)).
+  A metadata that comes later is bound, and its default input told once a round trip
+  after the bind is done; one that goes is told as not read.
 - **Ended** when PipeWire goes or cannot be reached: the task starts it again on
   `bluez::Backoff`, as the tasks on the system bus do, while the switch is on - and,
   with the switch off, while the source is still the default input, so the one before
@@ -208,9 +220,16 @@ from it on a tokio channel (`mic::AudioEvent`).
   which answers after every request before it
   ([protocol/linux/desktop.md](../protocol/linux/desktop.md#pipewire)). A thread that
   ends first, the put back still in its queue or its sync dropped, leaves it to the
-  next thread; a sync not answered within `mic::SYNC_LIMIT`, as from a thread that
-  hangs, has it asked again of the same thread. Either way it is asked again only while
-  the default input names the source ([The default input](#the-default-input)).
+  next thread, which asks it again only while the default input names the source
+  ([The default input](#the-default-input)).
+- **A thread that does not answer that sync within `mic::SYNC_LIMIT` is taken to hang,**
+  and done with as one that ended: asked to quit, should it ever serve its queue, no
+  longer heard, and a new one started on `bluez::Backoff`, which asks the put back
+  again. The switch off and on meanwhile starts the new one, once the backoff's wait is
+  over. A thread cannot be killed: a source the hung one had up stays on PipeWire, beside
+  the new thread's, both named `cymba.airpods_mic`. PipeWire takes two nodes of one name
+  ([protocol/linux/desktop.md](../protocol/linux/desktop.md#pipewire)); which of the two
+  a default input naming it picks is not known.
 
 ### Replies from the thread
 
@@ -220,7 +239,9 @@ under its lock and serves each request once the lock is let go, so an audio pack
 never holds up the task. At most `MAX_QUEUED_AUDIO` audio packets wait in it
 (`mic::pipewire`), about 0.5 s, more than `MAX_BUFFERED` keeps once decoded: one more is
 dropped, and counted into the figure the stop logs ([The audio](#the-audio)), so a thread
-that hangs does not grow the queue without end. No other request is ever dropped for room.
+that hangs does not grow the queue without end. No other request is ever dropped for room:
+the others come only as the task asks them, and a thread taken to hang
+([The PipeWire side](#the-pipewire-side)) is asked nothing after its quit.
 Not a `pw::channel`
 ([protocol/linux/desktop.md](../protocol/linux/desktop.md#pipewire)), whose send would wait
 for every decode queued before it.
@@ -284,6 +305,12 @@ On a Pro 3, with the switch on and music playing over A2DP:
 - Whether `mic::SWITCH_REPLY_LIMIT` outlasts a real switch off and back on a pair's card.
 - `systemctl --user restart pipewire wireplumber` while the source is the default input,
   then the switch off: the input before put back once PipeWire is.
+- With a USB or laptop input chosen before, `systemctl --user restart pipewire
+  wireplumber` within a second after the switch goes off: afterwards
+  `pactl get-default-source` names that input.
+- If WirePlumber tells the put back after the sync's `done`
+  ([protocol/linux/desktop.md](../protocol/linux/desktop.md#open-questions)): the thread
+  quitting right after still leaves the input put back.
 - `systemctl --user restart pipewire wireplumber` while recording, and again during a
   card switch: the source back once PipeWire is, the stream stopped, the card not left
   off.

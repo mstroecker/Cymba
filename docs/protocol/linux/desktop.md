@@ -60,6 +60,19 @@ PipeWire 1.6.10 against a daemon of a test's own, with no session manager, on
   cleared by a client, it was told back to that client (run below). GNOME's
   Sound panel and `pactl set-default-source` set this key, which WirePlumber keeps and
   follows when picking the input it uses (WirePlumber's documentation; not run here).
+- **With WirePlumber, the `default` metadata is WirePlumber's own,** kept in its process
+  and exported to the server, which hands every client's change on to it (WirePlumber
+  0.5.19, `src/scripts/metadata.lua` and `lib/wp/metadata.c`, `pw_core_export`;
+  PipeWire 1.6.0, `src/modules/module-metadata/metadata.c`, `metadata_set_property`).
+  So the metadata is there only while WirePlumber is: a client that connects before
+  WirePlumber has made it finds none, and it goes with WirePlumber. As it makes it,
+  WirePlumber sets each `default.configured.*` key from its state file (WirePlumber
+  0.5.19, `src/scripts/default-nodes/state-default-nodes.lua`). An exported metadata
+  that came after a client connected, from another client, was there for that client
+  to bind and change, its changes told back, and it went with the client that exported
+  it (run below).
+- **Two nodes may have one `node.name`:** two clients' streams given the same name were
+  both listed with it (run below).
 - **A Bluetooth device's card is a `bluez5` device object** with `api.bluez5.address`
   its address, its profiles its `EnumProfile` params and its profile now its `Profile`
   param, each with an index and a name; one is named `off`. Setting `Profile` to an
@@ -77,9 +90,11 @@ PipeWire 1.6.10 against a daemon of a test's own, with no session manager, on
   server handles a client's methods in the order sent and delivers events in order, so
   the `done` a `sync` asks for comes after every method sent before it, and the events
   those caused (PipeWire 1.6.10, `pipewire/core.h`, `pw_core_methods.sync`). It says the
-  server has them, not that a session manager has acted on them: with WirePlumber,
-  whether a change to the `default` metadata is told back before or after that `done`
-  is open ([Open questions](#open-questions)).
+  server has them, not that a session manager has acted on them. In the run the
+  `default` metadata was the daemon's own, made by its metadata module. With WirePlumber
+  the server hands a change on to WirePlumber's process, and the change is told from
+  there (above): whether before or after that `done` is open
+  ([Open questions](#open-questions)).
 - **A `pw::channel` send succeeds after its receiver is gone:** the queue is shared by
   sender and receiver and lives while a sender does; only a poisoned lock or a failed
   pipe write fails it. **Its receiver serves the queue under the lock a send takes:** the
@@ -268,7 +283,13 @@ manager, and a client that offered an `Audio/Source` stream and set the default 
 `pw-record` was given ports with `pw-cli set-param <id> PortConfig '{ direction: Input,
 mode: dsp, format: { ... } }'`, the source likewise, and linked with `pw-link`; the
 source's stream went `Paused` to `Streaming`, and back once `pw-record` was killed. The
-default input set and cleared on the metadata came back to the client each time.
+default input set and cleared on the metadata came back to the client each time. A
+second daemon, with no `default` metadata of its own, met a client that connected first;
+another client then made a metadata named `default` and exported it, as WirePlumber
+does (`pw_context_create_metadata`, `pw_core_export`). The first client bound it, set
+the default input on it and had that told back, and saw it removed once the exporting
+client disconnected. Two `pw-record`s given one `node.name` were both listed with it by
+`pw-cli ls Node`.
 
 **PipeWire 1.0.5: Ubuntu 24.04 in a container, 2026-11-15 (#209).** The same daemon, with
 `pw-cat --playback` offering the `Audio/Source` stream in place of the app: both nodes
@@ -290,7 +311,7 @@ state unknown and `WarningLevel` none, and `gsd-power` sent nothing.
 - With WirePlumber, whether a change to the `default` metadata's
   `default.configured.audio.source`, set just before a core `sync`, is told back to the
   client before that sync's `done` or after it ([PipeWire](#pipewire)). Not run here:
-  the run below had no session manager.
+  [the run](#runs) had no session manager.
 
 - In the Flatpak, logind sees `xdg-dbus-proxy` as the caller of `session/auto`: whether it
   still resolves to the user's graphical session (#196).
