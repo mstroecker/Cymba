@@ -4,6 +4,8 @@ runtime-version: '50'
 sdk: org.gnome.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
+  # libclang, for bindgen: the PipeWire bindings are generated at build time
+  - org.freedesktop.Sdk.Extension.llvm20
 command: cymba
 finish-args:
   - --socket=wayland
@@ -24,10 +26,23 @@ finish-args:
   # Whether the user is at the desktop, for the nearby notification: the
   # login session's hints, and each resume from sleep
   - --system-talk-name=org.freedesktop.login1
+  # The microphone over AAP: its source, the default input and the pair's
+  # card, on PipeWire
+  - --filesystem=xdg-run/pipewire-0
+# FFmpeg's full libavcodec, with its aac decoder, for the microphone: the
+# runtime's own leaves codecs out. Loaded at runtime from the app's
+# library path.
+add-extensions:
+  org.freedesktop.Platform.codecs-extra:
+    directory: lib/codecs-extra
+    version: '25.08'
+    add-ld-path: lib
+    autodelete: false
 build-options:
-  append-path: /usr/lib/sdk/rust-stable/bin
+  append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm20/bin
   env:
     CARGO_HOME: /run/build/cymba/cargo
+    LIBCLANG_PATH: /usr/lib/sdk/llvm20/lib
   # Test build only: lets cargo fetch crates. Flathub needs vendored sources
   # (flatpak-cargo-generator) instead.
   build-args:
@@ -38,6 +53,8 @@ modules:
     build-commands:
       - cargo build --release --locked
       - install -Dm755 target/release/cymba /app/bin/cymba
+      # Where codecs-extra is mounted
+      - mkdir -p /app/lib/codecs-extra
       - install -Dm644 assets/icons/hicolor/scalable/apps/io.github.mstroecker.Cymba.svg
         /app/share/icons/hicolor/scalable/apps/io.github.mstroecker.Cymba.svg
       - install -Dm644 assets/icons/hicolor/symbolic/apps/io.github.mstroecker.Cymba-symbolic.svg
