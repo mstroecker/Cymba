@@ -139,7 +139,7 @@ each packet for the key packet's header and opcode, `0x31`, until one comes
 ## Opcodes
 
 Every opcode in the runs cited in these documents, or read by the app, by byte 4: #71
-captures 1, 2 and 4, #142, #149 and #150. "Both" means a client sends it and the pods
+captures 1, 2 and 4, #142, #149 and #150, and the `0x58` packets of #211. "Both" means a client sends it and the pods
 send it too.
 
 | Opcode | From | What | Described in |
@@ -150,7 +150,7 @@ send it too.
 | `0x08` | Pods | Primary pod | [ear.md](ear.md#primary-pod-0x08) |
 | `0x09` | Both | Settings, by sub-command at byte 6: the noise control mode (`0x0D`), Conversation Awareness (`0x28`), allow Off (`0x34`) and others | [settings.md](settings.md) |
 | `0x0C` | Pods | Names a device: a pod, then this host | [Below](#0x0c-a-device-in-use) |
-| `0x0E` | Pods | Names this host, with a type | [Below](#0x0e-the-audio-source) |
+| `0x0E` | Pods | Names this host, or no device, with a type | [Below](#0x0e-the-audio-source) |
 | `0x0F` | Client | Notification request | [Step 3](#step-3-send-the-requests) |
 | `0x17` | Pods | Three at the end of the startup dump, and mid-link | [Not understood](#seen-but-not-understood) |
 | `0x1A` | Client | Rename | [rename.md](rename.md#rename-0x1a) |
@@ -160,13 +160,14 @@ send it too.
 | `0x30` | Client | Key request | [keys.md](keys.md#step-3-send-key-request) |
 | `0x31` | Pods | Key packet: the IRK and the ENC_KEY | [keys.md](keys.md#key-packet-format) |
 | `0x4B` | Pods | Conversation Awareness's speech level | [conversation-awareness.md](conversation-awareness.md#speech-levels-0x4b) |
-| `0x4C` | Pods | Once mid-link, 11 bytes | [Not understood](#seen-but-not-understood) |
+| `0x4C` | Pods | Mid-link, 11 bytes: once in #142, and during an A2DP profile switch ([microphone.md](microphone.md#a2dp)) | [Not understood](#seen-but-not-understood) |
 | `0x4D` | Client | Features | [Above](#prerequisites-the-features-packet) |
 | `0x4E` | Pods | In the startup dump | [Not understood](#seen-but-not-understood) |
 | `0x52` | Pods | Mid-link, 11 bytes | [Not understood](#seen-but-not-understood) |
 | `0x53` | Pods | In the startup dump | [Not understood](#seen-but-not-understood) |
-| `0x55` | Pods | In the startup dump, and mid-link | [Not understood](#seen-but-not-understood) |
+| `0x55` | Pods | In the startup dump, and mid-link, after the microphone's stop among others ([microphone.md](microphone.md#the-audio-source-and-the-pods)) | [Not understood](#seen-but-not-understood) |
 | `0x57` | Pods | Mid-link, 15 bytes | [Not understood](#seen-but-not-understood) |
+| `0x58` | Both | The microphone: a client's start and stop, the pods' answers, and the audio | [microphone.md](microphone.md) |
 | `0x63` | Pods | In the startup dump | [Not understood](#seen-but-not-understood) |
 
 Named elsewhere, never sent or seen here:
@@ -207,10 +208,15 @@ device the pods take to be in use, most likely - a guess.
 
 13 bytes, byte 5 `00` in all 12 of #71 capture 4.
 
-- **Early on every link** it names this host, type `00` (`btmon`, 2026-10-20, #149;
-  Pro 3, #71 captures; Pro 2 (USB-C), 2026-11-01, #149).
+- **Early on every link** it names this host: type `00` (`btmon`, 2026-10-20, #149;
+  Pro 3, #71 captures; Pro 2 (USB-C), 2026-11-01, #149), or type `02` when music already
+  played to this host as the session opened (Pro 3, 2026-11-15, #211).
 - **Type `02`** came once A2DP played to this host, 32 s into the link. Pausing sent no
   `0x0E` back to `00` (Pro 2 (USB-C), 2026-11-01, #149).
+- **Type `22`** named this host while the microphone ran, and type `00` named all zeros,
+  or an address not this host's, while the A2DP profile was switched off and back (Pro 3,
+  2026-11-15, #211):
+  [microphone.md](microphone.md#the-audio-source-and-the-pods).
 - **LibrePods' Android app** calls it `AUDIO_SOURCE`, and #149 reads it with it as the
   host that has the audio: type `00` none, `01` a call, `02` media.
 - **It never named the iPhone** (#149). Its takeover dropped the link, the ACL
