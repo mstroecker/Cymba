@@ -336,10 +336,10 @@ state unknown and `WarningLevel` none, and `gsd-power` sent nothing.
 ## Open questions
 
 - Two nodes of one `node.name` ([PipeWire](#pipewire)): which of them a default input
-  naming it picks. WirePlumber takes the first node of that name in its list of nodes
-  (WirePlumber 0.5.18, `find-selected-default-node.lua`); which one comes first there,
-  and which one an app recording from the default input then gets, has not been read or
-  run.
+  naming it picks. WirePlumber picks the default input by name (WirePlumber 0.5.18,
+  `find-selected-default-node.lua`, `apply-default-node.lua`); which of two nodes of that
+  name an app recording from it gets is decided where the name is resolved
+  (`default-nodes-api`, `get-default-node`), which has not been read or run.
 - With WirePlumber, whether a change to the `default` metadata's
   `default.configured.audio.source`, set just before a core `sync`, is told back to the
   client before that sync's `done` or after it ([PipeWire](#pipewire)). Not run here:

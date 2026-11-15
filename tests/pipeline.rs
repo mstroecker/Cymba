@@ -4916,9 +4916,9 @@ async fn a_put_back_answered_but_not_read_back_is_asked_again_after_the_metadata
 }
 
 /// WirePlumber restarting while the source is the default input: its
-/// `default` metadata goes, comes back empty, and is then set from its state
-/// to the input before. None of that is the user's choice: with the switch
-/// off, that input is put back (#209).
+/// `default` metadata goes, comes back empty, and is then set from a state
+/// saved before the source was made, to the input before. None of that is
+/// the user's choice: with the switch off, that input is put back (#209).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_wireplumber_restart_is_not_the_users_choice() {
     let (_fixture, _app, mut offering, side) = offered().await;
