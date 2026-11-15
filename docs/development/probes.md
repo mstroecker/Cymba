@@ -12,7 +12,7 @@ as [protocol/ble/proximity-pairing.md](../protocol/ble/proximity-pairing.md) cou
 
 - **The pair must be connected** to this machine, for every probe that takes a MAC.
   The probe opens AAP to it, as the app does.
-- **Quit Cymba first** for `irk_probe`, `rename_probe` and
+- **Quit Cymba first** for `irk_probe`, `rename_probe`, `mic_probe` and
   `conversation_awareness --duck`, so the probe's AAP session is the only one, or the
   only thing lowering the volume, and for `adv_monitor_probe` wherever Cymba
   discovers - an adapter where BlueZ gives it no monitor - so that nothing discovers. The other probes say nothing either way.
@@ -41,6 +41,9 @@ Probe output is meant to be pasted into issues.
   does the same after a rename and in each `--sweep` step. So they print `0x2B`, the
   hosts the pair knows (a phone among them), and `0x0C`, `0x0E` and `0x2E`, which name
   this host or a pod ([protocol/aap/session.md](../protocol/aap/session.md#opcodes)).
+  `mic_probe` prints the answers to the microphone's start and stop whole, and the
+  first audio packets' headers, whose bytes 16-21 are not understood
+  ([protocol/aap/microphone.md](../protocol/aap/microphone.md#audio-0x58-01-00)).
 - **Device addresses, in `adv_monitor_probe`:** the random address of every device in
   range that advertises proximity pairing data - other people's AirPods among them - or
   that the monitor reports found or lost, and the address of every device whose
@@ -276,3 +279,48 @@ or ctrl-c unregisters the monitor and prints a summary per address.
   during the run and look for its `Connected=true`.
 - **Never prints** payload bytes: only the model, the status byte and the length.
 - **Prints** device addresses: [What the output shows](#what-the-output-shows).
+
+## `mic_probe`
+
+Asks the pods for their microphone over AAP, to see how the audio is framed, whether
+the system FFmpeg decodes it and what happens to A2DP (#209). The packets and what a
+Pro 3 did with them: [protocol/aap/microphone.md](../protocol/aap/microphone.md).
+
+```bash
+cargo run --example mic_probe -- <MAC> <OUT> [SECONDS] [--no-reset]
+```
+
+It reads what the pods send for `BEFORE_START`, sends the start, records for
+`SECONDS`, sends the stop and reads for `AFTER_STOP` more. It prints the first audio
+packets' headers with each access unit's timestamp and length, the answers to the start
+and the stop, every other packet as it comes, and a summary: packets and access units
+with their sizes, the timestamp steps, the header bytes that changed and how many frames
+came a second. The A2DP transport is read at each step, and after the switch below. Play
+something to the pair during the run.
+
+Every other packet is printed by what it is - a battery, ear or primary pod report, a
+noise mode - and one that names devices (`0x0C`, `0x0E`, `0x2E`) with each address
+named instead of printed: the pair, this host, no device (all zeros), or "address 1",
+"2" and on. Any other packet is printed as its opcode and length.
+
+After the stop it switches the pair's card off and back to its profile with `pactl`,
+for the pod that goes silent after a stop
+([protocol/aap/microphone.md](../protocol/aap/microphone.md#a2dp)). It then plays again
+every MPRIS player that was playing, once a new A2DP transport has come or `RESUME_WAIT`
+has passed, and once the player reports the pause the switch causes. With a player
+playing, it waits for the pair's A2DP transport to play, and switches again if it does
+not, up to `SWITCH_TRIES` switches. Each `pactl` call is killed after `PACTL_LIMIT`, and
+the whole reset is given up after `RESET_LIMIT`. **`--no-reset`** leaves the pair as
+the stop left it.
+
+The access units go to `<OUT>.mka`, with LibrePods' AudioSpecificConfig. With `ffmpeg`
+on the path, it decodes them with FFmpeg's own `aac` decoder into `<OUT>-48k.wav` and
+`<OUT>-64k.wav`, the same samples at the rate the configuration gives and at the rate
+they come at, and prints FFmpeg's errors and the level; with `ffprobe`, also what it
+makes of the stream.
+
+- **The files hold a recording** of whatever the microphone heard: keep them in
+  `captures/`, which git ignores, and never attach them to an issue.
+- **Never prints** audio, keys or serial numbers.
+- **Prints** the pair's address, also in the card's name, and some `0x58` packets
+  whole: [What the output shows](#what-the-output-shows).
