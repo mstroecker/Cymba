@@ -750,9 +750,7 @@ impl Mic {
                     _ => self.backoff.failed(),
                 };
                 self.availability
-                    .send_replace(Availability::Unavailable(format!(
-                        "PipeWire could not be reached: {reason}"
-                    )));
+                    .send_replace(Availability::Unavailable(reason));
                 self.audio = None;
                 self.ready = false;
                 self.recording = false;
@@ -826,17 +824,23 @@ impl Mic {
 
         // Once the switch is off, and nothing is left to put back, the
         // audio side ends.
-        if !on
-            && !self.source_up
-            && !self.default_input.is_made()
-            && !self.stream.is_switching()
-            && let Some(side) = self.audio.take()
-        {
-            side.ask(AudioRequest::Quit);
+        // So does the wait to start it again: turned on again, it is tried
+        // at once, and until then nothing says PipeWire is not there.
+        if !on && !self.source_up && !self.default_input.is_made() && !self.stream.is_switching() {
+            if let Some(side) = self.audio.take() {
+                side.ask(AudioRequest::Quit);
+            }
             self.ready = false;
             self.restart_at = None;
+            self.backoff = Backoff::default();
             if self.missing.is_none() {
-                self.availability.send_replace(Availability::Unknown);
+                self.availability.send_if_modified(|availability| {
+                    let unknown = Availability::Unknown;
+                    (*availability != unknown) && {
+                        *availability = unknown;
+                        true
+                    }
+                });
             }
         }
     }
