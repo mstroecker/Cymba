@@ -372,12 +372,26 @@ struct Made {
     applied: bool,
 }
 
+/// A put back asked, until the default input reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Asked {
+    /// The default input put back: the node it names, or none.
+    before: Option<String>,
+    /// It may not have reached PipeWire: asked again while the default
+    /// input reads the source with the source down.
+    lost: bool,
+}
+
 /// The default input while the source is up: made the source, and the one
 /// before put back after - unless the user chose another meanwhile, whose
-/// choice wins and stays.
+/// choice wins and stays. The one before is kept until the default input
+/// reads it put back.
 #[derive(Debug, Clone, Default)]
 pub struct DefaultInput {
     made: Option<Made>,
+    /// The last put back, until the default input reads it, or another
+    /// that is the user's.
+    asked: Option<Asked>,
     /// The user moved the default input off the source: it is not made the
     /// source again until the source has gone and come back.
     held_off: bool,
@@ -387,12 +401,28 @@ impl DefaultInput {
     /// What the default input reading `current` (the node it names) asks
     /// for, with the source up or not.
     ///
-    /// - Up, and not made yet: make it the source, remembering `current`.
+    /// - A put back read back is done; another input read meanwhile is
+    ///   the user's, and ends it too.
+    /// - Up, and not made yet: make it the source, remembering `current` -
+    ///   or, while a put back is not read back, the one it put back.
     /// - Read the source once, and then another: the user's choice. Nothing
     ///   is put back, and the source is not made the default input again
     ///   while it stays up.
-    /// - Down, made: put back what was before.
+    /// - Down, made: put back what was before. Down with a put back lost:
+    ///   ask it again.
     pub fn update(&mut self, up: bool, current: Option<&str>) -> Option<DefaultChange> {
+        if let Some(asked) = &self.asked {
+            if current == asked.before.as_deref() {
+                self.asked = None;
+                // Made since: the default input reads the put back first,
+                // and the source after.
+                if let Some(made) = &mut self.made {
+                    made.applied = false;
+                }
+            } else if current != Some(NODE_NAME) {
+                self.asked = None;
+            }
+        }
         if let Some(made) = &mut self.made {
             if current == Some(NODE_NAME) {
                 made.applied = true;
@@ -409,32 +439,56 @@ impl DefaultInput {
             }
             (true, None) if self.held_off => None,
             (true, None) => {
+                // A put back still standing here was not read back: the
+                // default input reads the source, maybe before the put back
+                // is told.
+                let before = match &mut self.asked {
+                    Some(asked) => {
+                        asked.lost = false;
+                        asked.before.clone()
+                    }
+                    None => current.filter(|c| *c != NODE_NAME).map(String::from),
+                };
                 self.made = Some(Made {
-                    before: current.filter(|c| *c != NODE_NAME).map(String::from),
+                    before,
                     applied: current == Some(NODE_NAME),
                 });
                 Some(DefaultChange::Source)
             }
-            (false, made) => {
+            (false, Some(made)) => {
                 self.held_off = false;
-                made.map(|made| DefaultChange::PutBack(made.before))
+                self.asked = Some(Asked {
+                    before: made.before.clone(),
+                    lost: false,
+                });
+                Some(DefaultChange::PutBack(made.before))
+            }
+            (false, None) => {
+                self.held_off = false;
+                match &mut self.asked {
+                    Some(asked) if asked.lost => {
+                        asked.lost = false;
+                        Some(DefaultChange::PutBack(asked.before.clone()))
+                    }
+                    _ => None,
+                }
             }
         }
     }
 
-    /// Whether the source was made the default input, and not yet put back.
-    pub fn is_made(&self) -> bool {
-        self.made.is_some()
+    /// Whether PipeWire is needed: the source is the default input, or a
+    /// put back is to be asked again.
+    pub fn needs_pipewire(&self) -> bool {
+        self.made.is_some() || self.asked.as_ref().is_some_and(|asked| asked.lost)
     }
 
-    /// Putting `before` back did not reach PipeWire: it is put back at the
-    /// next update with the source down, if the default input still reads
-    /// the source then.
-    pub fn not_put_back(&mut self, before: Option<String>) {
-        self.made = Some(Made {
-            before,
-            applied: true,
-        });
+    /// The last put back may not have reached PipeWire: it is asked again
+    /// at the next update with the source down, if the default input still
+    /// reads the source then.
+    pub fn not_put_back(&mut self) {
+        if let Some(asked) = &mut self.asked {
+            asked.lost = true;
+        }
     }
 }
 
@@ -551,6 +605,8 @@ pub struct Mic {
     resume_wait: Duration,
     /// [`SWITCH_REPLY_LIMIT`] but in a test, which may ask for less.
     switch_reply_limit: Duration,
+    /// [`SYNC_LIMIT`] but in a test, which may ask for less.
+    sync_limit: Duration,
     /// The stop and the card switch after it, while under way.
     switching: Option<tokio::task::JoinHandle<()>>,
     /// The audio side, while it runs.
@@ -571,8 +627,8 @@ pub struct Mic {
     source_up: bool,
     stream: Stream,
     default_input: DefaultInput,
-    /// The put back of the default input last asked, until the audio side
-    /// has answered a sync asked after it.
+    /// The sync asked after the last put back of the default input, until
+    /// the audio side has answered it: the side is not ended before.
     put_back: Option<PutBack>,
     /// Audio packets the audio side had no room for.
     audio_dropped: u64,
@@ -621,6 +677,7 @@ impl Mic {
             limit: media::CALL_LIMIT,
             resume_wait: RESUME_WAIT,
             switch_reply_limit: SWITCH_REPLY_LIMIT,
+            sync_limit: SYNC_LIMIT,
             switching: None,
             audio: None,
             audio_events,
@@ -674,14 +731,22 @@ impl Mic {
         self
     }
 
+    /// Waits `limit` for the audio side to answer a sync, in place of
+    /// [`SYNC_LIMIT`]: for a test of an answer that never comes.
+    #[cfg(feature = "harness")]
+    pub fn with_sync_limit(mut self, limit: Duration) -> Self {
+        self.sync_limit = limit;
+        self
+    }
+
     /// Runs until the coordinator goes. The audio side is started while the
     /// switch is on, or while it is off with the default input still to be
     /// put back, and again after it ended, waiting longer each time.
     ///
-    /// Events come first, then audio, what the audio side tells, the
-    /// snapshots, the switch and the task's own work, then the timers, and
-    /// requests last: [`MicControl::settled`] answers for every event told
-    /// before it.
+    /// Events come first, then audio, what the audio side tells, a put
+    /// back's answer, the snapshots, the switch and the task's own work,
+    /// then the timers, and requests last: [`MicControl::settled`] answers
+    /// for every event told before it.
     pub async fn run(mut self) {
         let mut snapshots_open = true;
         let mut switch_open = true;
@@ -797,13 +862,11 @@ impl Mic {
                     self.availability
                         .send_replace(Availability::Unavailable(reason));
                 }
-                // A put back the side never answered may never have
-                // reached PipeWire: the next side asks it again.
-                if let Some(put_back) = self.put_back.take()
-                    && !put_back.answer.is_some_and(|mut a| a.try_recv().is_ok())
-                {
-                    self.default_input.not_put_back(put_back.before);
-                }
+                // A put back not read back may not have reached PipeWire,
+                // or not stayed: the next side asks it again while the
+                // default input names the source.
+                self.put_back = None;
+                self.default_input.not_put_back();
                 self.audio = None;
                 self.ready = false;
                 self.recording = false;
@@ -826,9 +889,12 @@ impl Mic {
             }
             Answered::Late => {
                 tracing::warn!(
-                    "PipeWire's thread did not confirm the put back within {SYNC_LIMIT:?}"
+                    "PipeWire's thread did not confirm the put back within {:?}: \
+                     asked again while the default input names the source",
+                    self.sync_limit
                 );
                 self.put_back = None;
+                self.default_input.not_put_back();
             }
         }
     }
@@ -847,7 +913,7 @@ impl Mic {
         // The audio side runs while the switch is on, for the source and
         // for whether anything records; and while the source is the
         // default input, to put the one before back.
-        if (on || self.default_input.is_made())
+        if (on || self.default_input.needs_pipewire())
             && self.missing.is_none()
             && self.audio.is_none()
             && self.restart_at.is_none()
@@ -908,7 +974,7 @@ impl Mic {
         // waited for, as its side ending first would leave it undone.
         if !on
             && !self.source_up
-            && !self.default_input.is_made()
+            && !self.default_input.needs_pipewire()
             && self.put_back.is_none()
             && !self.stream.is_switching()
         {
@@ -943,7 +1009,8 @@ impl Mic {
                     "The default input is now the microphone's source, in place of {}",
                     self.default.as_deref().unwrap_or("none")
                 );
-                // A put back still unanswered is over: the source again.
+                // A put back's sync still unanswered no longer holds the
+                // side: the source is the default input again.
                 self.put_back = None;
                 side.ask(AudioRequest::SetDefault(Some(NODE_NAME.into())));
             }
@@ -952,20 +1019,20 @@ impl Mic {
                     "The default input put back to {}",
                     before.as_deref().unwrap_or("none")
                 );
-                // Put back once the side answers a sync asked after it;
-                // the side ended first, by the next one.
+                // The side is kept until it answers a sync asked after it;
+                // one that ends first, or does not answer, leaves it to be
+                // asked again.
                 let (done, answer) = oneshot::channel();
                 if side.ask(AudioRequest::SetDefault(before.clone()))
                     && side.ask(AudioRequest::Sync(done))
                 {
                     self.put_back = Some(PutBack {
-                        before,
                         answer: Some(answer),
-                        deadline: tokio::time::Instant::now() + SYNC_LIMIT,
+                        deadline: tokio::time::Instant::now() + self.sync_limit,
                     });
                 } else {
                     self.put_back = None;
-                    self.default_input.not_put_back(before);
+                    self.default_input.not_put_back();
                 }
             }
         }
@@ -1060,9 +1127,12 @@ impl Mic {
         };
         let (done, answer) = oneshot::channel();
         if side.ask(AudioRequest::Sync(done))
-            && tokio::time::timeout(SYNC_LIMIT, answer).await.is_err()
+            && tokio::time::timeout(self.sync_limit, answer).await.is_err()
         {
-            tracing::warn!("PipeWire's thread did not answer within {SYNC_LIMIT:?}");
+            tracing::warn!(
+                "PipeWire's thread did not answer within {:?}",
+                self.sync_limit
+            );
         }
     }
 
@@ -1112,14 +1182,12 @@ impl Mic {
     }
 }
 
-/// A put back of the default input asked of the audio side.
+/// The sync asked after a put back of the default input.
 struct PutBack {
-    /// The default input put back: the node it names, or none.
-    before: Option<String>,
     /// The answer to the sync asked after it; `None` once dropped unanswered.
     answer: Option<oneshot::Receiver<()>>,
     /// When the answer, or the side's `Gone` after one dropped, is given up
-    /// on: [`SYNC_LIMIT`] after the ask.
+    /// on: [`SYNC_LIMIT`] after the ask, but in a test.
     deadline: tokio::time::Instant,
 }
 
@@ -1634,7 +1702,7 @@ mod tests {
             default.update(false, Some(NODE_NAME)),
             Some(DefaultChange::PutBack(Some("alsa_input.mic".into())))
         );
-        assert!(!default.is_made());
+        assert!(!default.needs_pipewire());
         assert_eq!(default.update(false, Some("alsa_input.mic")), None);
 
         let mut default = DefaultInput::default();
@@ -1654,7 +1722,7 @@ mod tests {
         default.update(true, Some("alsa_input.mic"));
         default.update(true, Some(NODE_NAME));
         assert_eq!(default.update(true, Some("usb_headset")), None);
-        assert!(!default.is_made());
+        assert!(!default.needs_pipewire());
         assert_eq!(default.update(true, Some("usb_headset")), None);
         assert_eq!(default.update(false, Some("usb_headset")), None);
         assert_eq!(
@@ -1675,16 +1743,78 @@ mod tests {
             default.update(false, Some(NODE_NAME)),
             Some(DefaultChange::PutBack(Some("alsa_input.mic".into())))
         );
-        default.not_put_back(Some("alsa_input.mic".into()));
-        assert!(default.is_made());
+        default.not_put_back();
+        assert!(default.needs_pipewire());
         assert_eq!(
             default.update(false, Some(NODE_NAME)),
             Some(DefaultChange::PutBack(Some("alsa_input.mic".into())))
         );
 
-        default.not_put_back(Some("alsa_input.mic".into()));
+        default.not_put_back();
         assert_eq!(default.update(false, Some("usb_headset")), None);
-        assert!(!default.is_made());
+        assert!(!default.needs_pipewire());
+    }
+
+    /// The source made the default input again before its put back is read
+    /// back - unanswered, lost or given up - reads the source still: the one
+    /// before is the put back's, and is put back after. The put back and the
+    /// source then read back are not the user's choice.
+    #[test]
+    fn made_again_before_the_put_back_is_read_keeps_the_one_before() {
+        for lost in [false, true] {
+            let mut default = DefaultInput::default();
+            default.update(true, Some("alsa_input.mic"));
+            default.update(true, Some(NODE_NAME));
+            assert_eq!(
+                default.update(false, Some(NODE_NAME)),
+                Some(DefaultChange::PutBack(Some("alsa_input.mic".into())))
+            );
+            if lost {
+                default.not_put_back();
+            }
+            assert_eq!(
+                default.update(true, Some(NODE_NAME)),
+                Some(DefaultChange::Source)
+            );
+            assert_eq!(
+                default.update(false, Some(NODE_NAME)),
+                Some(DefaultChange::PutBack(Some("alsa_input.mic".into())))
+            );
+
+            assert_eq!(
+                default.update(true, Some(NODE_NAME)),
+                Some(DefaultChange::Source)
+            );
+            for told in ["alsa_input.mic", "alsa_input.mic", NODE_NAME] {
+                assert_eq!(default.update(true, Some(told)), None);
+            }
+            assert_eq!(
+                default.update(false, Some(NODE_NAME)),
+                Some(DefaultChange::PutBack(Some("alsa_input.mic".into())))
+            );
+        }
+    }
+
+    /// A put back lost on its way that landed all the same - the default
+    /// input reads it as the source comes up again - is done, not the
+    /// user's choice: the source is made the default input, and that one
+    /// put back after.
+    #[test]
+    fn a_put_back_lost_that_landed_is_done() {
+        let mut default = DefaultInput::default();
+        default.update(true, Some("alsa_input.mic"));
+        default.update(true, Some(NODE_NAME));
+        default.update(false, Some(NODE_NAME));
+        default.not_put_back();
+        assert_eq!(
+            default.update(true, Some("alsa_input.mic")),
+            Some(DefaultChange::Source)
+        );
+        assert_eq!(default.update(true, Some(NODE_NAME)), None);
+        assert_eq!(
+            default.update(false, Some(NODE_NAME)),
+            Some(DefaultChange::PutBack(Some("alsa_input.mic".into())))
+        );
     }
 
     /// A default left naming the source - a quit that did not put it back -
