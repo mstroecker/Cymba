@@ -92,6 +92,19 @@ microphone" takes it, as a phone call would on the pods. The default input is Pi
   again until it has gone and come back, as `volume` leaves a volume the user moved.
 - **A default naming the source** when it comes up - a quit that did not put it back - is
   not remembered as the one before.
+- **The one before is kept until the default input reads it put back,** whatever comes
+  between. A sync answered says PipeWire has the put back, not that the session manager
+  has told it ([protocol/linux/desktop.md](../protocol/linux/desktop.md#pipewire)), so
+  until then:
+  - **Made the source again** - the switch off and on, the pair gone and back - with
+    the default input still reading the source: the one before is the put back's, not
+    none. The put back read back after, and the source after it, are not the user's
+    choice.
+  - **A put back that may be lost** - its thread ended, or its sync not answered within
+    `mic::SYNC_LIMIT` ([The PipeWire side](#the-pipewire-side)) - is asked again while
+    the default input reads the source with the source down. Read back as put back,
+    by the next thread too, it is done, and not the user's choice.
+  - **Another input read** is the user's choice, and ends it.
 
 ## The card switch
 
@@ -190,12 +203,14 @@ from it on a tokio channel (`mic::AudioEvent`).
   `bluez::Backoff`, as the tasks on the system bus do, while the switch is on - and,
   with the switch off, while the source is still the default input, so the one before
   can be put back. With the switch off the row stays usable meanwhile.
-- **A put back counts** once the thread has answered a sync (`AudioRequest::Sync`) asked
-  right after it, as PipeWire takes requests in order; the thread is not asked to end
-  before. A thread that ends first, the put back still in its queue or its sync dropped,
-  leaves it to the next thread, which puts it back if the default input still names the
-  source. One not answered within `mic::SYNC_LIMIT` is given up, as from a thread that
-  hangs.
+- **Not ended before a put back has reached PipeWire:** the thread is asked to end only
+  once it has answered a sync (`AudioRequest::Sync`) asked right after the put back,
+  which answers after every request before it
+  ([protocol/linux/desktop.md](../protocol/linux/desktop.md#pipewire)). A thread that
+  ends first, the put back still in its queue or its sync dropped, leaves it to the
+  next thread; a sync not answered within `mic::SYNC_LIMIT`, as from a thread that
+  hangs, has it asked again of the same thread. Either way it is asked again only while
+  the default input names the source ([The default input](#the-default-input)).
 
 ### Replies from the thread
 
@@ -249,6 +264,12 @@ On a Pro 3, with the switch on and music playing over A2DP:
   start and stop the stream, and each stop switches the card: whether that is a nuisance.
 - Choosing another input in the Sound panel while the pair is connected: it stays chosen
   after a disconnect.
+- With another input chosen before, such as a USB microphone, and something recording:
+  the switch off and on within about 100 ms, then off again. `pactl get-default-source`
+  then names that input.
+- Against a real WirePlumber: whether the default input a put back sets is told back
+  after the sync asked behind it is answered, and names the input before
+  ([protocol/linux/desktop.md](../protocol/linux/desktop.md#open-questions)).
 - What a pod taken out of an ear, or into the case, does to the stream
   ([protocol/aap/microphone.md](../protocol/aap/microphone.md#open-questions)).
 - The quit while recording: the stop is sent, with no card switch: whether one pod then

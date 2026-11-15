@@ -327,7 +327,9 @@ notification was Conversation Awareness's speech level `09` (#150).
   [Why](docs/app/mic.md#conversation-awareness)
 - The source is the default input (`default.configured.audio.source`) while it is up, and the one
   before is put back as it goes - unless the user chose another meanwhile, which wins until the
-  source has gone and come back. [Why](docs/app/mic.md#the-default-input)
+  source has gone and come back. The one before is kept until the default input reads it put
+  back: a make meanwhile takes it, and neither it nor the source read back after is the user's.
+  [Why](docs/app/mic.md#the-default-input)
 - The card switch only after a stop the app sent, never on its own timer or for a link that went:
   the card's `Profile` off and back on PipeWire's thread, each step within
   `mic::SWITCH_STEP_LIMIT`, the card set back if one fails and at the quit; then a new A2DP
@@ -340,8 +342,8 @@ notification was Conversation Awareness's speech level `09` (#150).
   ends. [Why](docs/app/mic.md#replies-from-the-thread)
 - PipeWire's thread runs while the switch is on, and with it off until the default input is put
   back - once the thread has answered a sync asked after the put back; a thread that ends first
-  leaves it to the next - started again on `bluez::Backoff`; with the switch off, the row stays
-  usable.
+  leaves it to the next, and a sync not answered within `mic::SYNC_LIMIT` has it asked again -
+  started again on `bluez::Backoff`; with the switch off, the row stays usable.
   [Why](docs/app/mic.md#the-pipewire-side)
 - FFmpeg's own `aac` decoder from the system's libavcodec, loaded at runtime, never linked, never
   `libfdk_aac`: a soname from `decoder::NEWEST_MAJOR` down to `decoder::OLDEST_MAJOR`, its version

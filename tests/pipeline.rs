@@ -4354,6 +4354,11 @@ struct FakeAudio {
     /// PipeWire's thread does with the requests left as it ends: set by
     /// [`Offering::drop_next_sync`].
     drop_sync: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether to keep the next sync unanswered, never dropping it, as a
+    /// thread that hangs would: set by [`Offering::keep_next_sync`].
+    keep_sync: Arc<std::sync::atomic::AtomicBool>,
+    /// The syncs kept.
+    kept: std::sync::Mutex<Vec<oneshot::Sender<()>>>,
 }
 
 /// The next request `which` picks, held in `ask` - as a request may wait
@@ -4387,6 +4392,14 @@ impl AudioSide for FakeAudio {
             {
                 true
             }
+            AudioRequest::Sync(done)
+                if self
+                    .keep_sync
+                    .swap(false, std::sync::atomic::Ordering::SeqCst) =>
+            {
+                self.kept.lock().unwrap().push(done);
+                true
+            }
             AudioRequest::Sync(done) => done.send(()).is_ok(),
             other => self.asked.send(other).is_ok(),
         }
@@ -4412,6 +4425,8 @@ struct Offering {
     hold: Arc<std::sync::Mutex<Option<Held>>>,
     /// Whether the audio side drops the next sync.
     drop_sync: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether the audio side keeps the next sync unanswered.
+    keep_sync: Arc<std::sync::atomic::AtomicBool>,
     task: JoinHandle<()>,
 }
 
@@ -4485,6 +4500,12 @@ impl Offering {
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// Has the audio side take the next sync and never answer it.
+    fn keep_next_sync(&self) {
+        self.keep_sync
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// Whether the stream is idle, once the task has taken every event told
     /// so far.
     async fn settled(&self) -> bool {
@@ -4496,8 +4517,9 @@ impl Offering {
 
 impl Fixture {
     /// Starts the microphone's task on `app`'s coordinator, with the switch
-    /// on, waiting `switch_reply` for the audio side to answer a card switch.
-    async fn start_offering(&self, app: &App, switch_reply: Duration) -> Offering {
+    /// on, waiting `switch_reply` for the audio side to answer a card switch
+    /// and `sync` to answer a sync.
+    async fn start_offering(&self, app: &App, switch_reply: Duration, sync: Duration) -> Offering {
         let session = PrivateBus::start().expect("dbus-daemon starts");
         let (switch, on) = watch::channel(true);
         let (asked_tx, asked) = mpsc::unbounded_channel();
@@ -4506,12 +4528,16 @@ impl Fixture {
         let held = hold.clone();
         let drop_sync = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let dropping = drop_sync.clone();
+        let keep_sync = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let keeping = keep_sync.clone();
         let start: mic::StartAudio = Box::new(move |events| {
             let _ = started_tx.send(events);
             Ok(Arc::new(FakeAudio {
                 asked: asked_tx.clone(),
                 hold: held.clone(),
                 drop_sync: dropping.clone(),
+                keep_sync: keeping.clone(),
+                kept: std::sync::Mutex::new(Vec::new()),
             }))
         });
         let bluez = self.bus.address().to_string();
@@ -4527,7 +4553,8 @@ impl Fixture {
         let offering = offering
             .with_call_limit(MEDIA_CALL_LIMIT)
             .with_waits(MIC_WAIT, MIC_WAIT)
-            .with_switch_reply_limit(switch_reply);
+            .with_switch_reply_limit(switch_reply)
+            .with_sync_limit(sync);
         Offering {
             session,
             switch,
@@ -4536,6 +4563,7 @@ impl Fixture {
             started,
             hold,
             drop_sync,
+            keep_sync,
             task: tokio::spawn(offering.run()),
         }
     }
@@ -4548,12 +4576,14 @@ const LAPTOP_MIC: &str = "alsa_input.pci-0000_00_1f.3.analog-stereo";
 /// microphone's switch on and PipeWire ready: the source up, and made the
 /// default input in place of [`LAPTOP_MIC`], which PipeWire has read back.
 async fn offered() -> (Fixture, App, Offering, mpsc::UnboundedSender<AudioEvent>) {
-    offered_with(mic::SWITCH_REPLY_LIMIT).await
+    offered_with(mic::SWITCH_REPLY_LIMIT, mic::SYNC_LIMIT).await
 }
 
-/// [`offered`], the task waiting `switch_reply` for a card switch's answer.
+/// [`offered`], the task waiting `switch_reply` for a card switch's answer
+/// and `sync` for a sync's.
 async fn offered_with(
     switch_reply: Duration,
+    sync: Duration,
 ) -> (Fixture, App, Offering, mpsc::UnboundedSender<AudioEvent>) {
     let fixture = Fixture::new(&[(PAIR, PRO_3, PAIR_LEVELS)]).await;
     fixture
@@ -4563,7 +4593,7 @@ async fn offered_with(
         .unwrap();
     let mut app = fixture.start_app().await;
     app.stop_listening().await;
-    let mut offering = fixture.start_offering(&app, switch_reply).await;
+    let mut offering = fixture.start_offering(&app, switch_reply, sync).await;
     let side = offering.side().await;
     side.send(AudioEvent::Ready {
         default: Some(LAPTOP_MIC.into()),
@@ -4779,6 +4809,29 @@ async fn a_put_back_the_side_took_but_never_served_is_asked_again() {
     assert!(offering.settled().await);
 }
 
+/// A put back whose sync the audio side never answers, as from a thread
+/// that hangs, is asked again once the sync's limit has passed, the default
+/// input still naming the source; the side is asked to quit only once a
+/// sync after a put back is answered (#209).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_put_back_never_confirmed_is_asked_again() {
+    let (_fixture, _app, mut offering, _side) =
+        offered_with(mic::SWITCH_REPLY_LIMIT, MIC_WAIT).await;
+    offering.keep_next_sync();
+    offering.switch.send_replace(false);
+    assert!(matches!(offering.next().await, AudioRequest::Source(false)));
+    assert!(matches!(
+        offering.next().await,
+        AudioRequest::SetDefault(Some(name)) if name == LAPTOP_MIC
+    ));
+    assert!(matches!(
+        offering.next().await,
+        AudioRequest::SetDefault(Some(name)) if name == LAPTOP_MIC
+    ));
+    assert!(matches!(offering.next().await, AudioRequest::Quit));
+    assert!(offering.settled().await);
+}
+
 /// A recording that starts the microphone, and ends: the stream stops, and
 /// the side is asked for the card switch, whose answer is handed back.
 async fn record_and_stop(
@@ -4801,7 +4854,7 @@ async fn record_and_stop(
 /// again (#209).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_side_ending_during_the_card_switch_leaves_the_microphone_usable() {
-    let (fixture, _app, mut offering, side) = offered_with(MIC_WAIT).await;
+    let (fixture, _app, mut offering, side) = offered_with(MIC_WAIT, mic::SYNC_LIMIT).await;
     let unanswered = record_and_stop(&mut offering, &side).await;
     side.send(AudioEvent::Gone("the connection to PipeWire ended".into()))
         .unwrap();
