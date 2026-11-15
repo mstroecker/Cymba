@@ -250,6 +250,13 @@ mode: dsp, format: { ... } }'`, the source likewise, and linked with `pw-link`; 
 source's stream went `Paused` to `Streaming`, and back once `pw-record` was killed. The
 default input set and cleared on the metadata came back to the client each time.
 
+**PipeWire 1.0.5: Ubuntu 24.04 in a container, 2026-11-15 (#209).** The same daemon, with
+`pw-cat --playback` offering the `Audio/Source` stream in place of the app: both nodes
+given ports with `PortConfig` as above, `pw-link` linked them by port name, and every node
+went `running`. A client with an empty runtime directory reached a daemon at
+`/run/pipewire/pipewire-0` by the relative remote name `pipewire-0`, from `-r` or
+`PIPEWIRE_REMOTE`, but not by an absolute `PIPEWIRE_REMOTE` in that empty directory.
+
 **The volume: Pro 3, 2026-11-01 (#150).** The transport's `Volume` was set from 32 to 20
 and back with `busctl`, which was not the transport's owner. PipeWire's sink followed
 within 0.5 s: 25% to 16% to 25%.
