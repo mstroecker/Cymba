@@ -4350,6 +4350,10 @@ struct FakeAudio {
     asked: mpsc::UnboundedSender<AudioRequest>,
     /// A request to hold in `ask`, set by [`Offering::hold`].
     hold: Arc<std::sync::Mutex<Option<Held>>>,
+    /// Whether to drop the next sync unanswered, taking it all the same, as
+    /// PipeWire's thread does with the requests left as it ends: set by
+    /// [`Offering::drop_next_sync`].
+    drop_sync: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// The next request `which` picks, held in `ask` - as a request may wait
@@ -4376,6 +4380,13 @@ impl AudioSide for FakeAudio {
             tokio::task::block_in_place(|| held.release.recv().ok());
         }
         match request {
+            AudioRequest::Sync(_)
+                if self
+                    .drop_sync
+                    .swap(false, std::sync::atomic::Ordering::SeqCst) =>
+            {
+                true
+            }
             AudioRequest::Sync(done) => done.send(()).is_ok(),
             other => self.asked.send(other).is_ok(),
         }
@@ -4399,6 +4410,8 @@ struct Offering {
     started: mpsc::UnboundedReceiver<mpsc::UnboundedSender<AudioEvent>>,
     /// A request for the audio side to hold.
     hold: Arc<std::sync::Mutex<Option<Held>>>,
+    /// Whether the audio side drops the next sync.
+    drop_sync: Arc<std::sync::atomic::AtomicBool>,
     task: JoinHandle<()>,
 }
 
@@ -4466,6 +4479,12 @@ impl Offering {
         (held, release)
     }
 
+    /// Has the audio side take the next sync and drop it unanswered.
+    fn drop_next_sync(&self) {
+        self.drop_sync
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// Whether the stream is idle, once the task has taken every event told
     /// so far.
     async fn settled(&self) -> bool {
@@ -4485,11 +4504,14 @@ impl Fixture {
         let (started_tx, started) = mpsc::unbounded_channel();
         let hold = Arc::new(std::sync::Mutex::new(None));
         let held = hold.clone();
+        let drop_sync = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let dropping = drop_sync.clone();
         let start: mic::StartAudio = Box::new(move |events| {
             let _ = started_tx.send(events);
             Ok(Arc::new(FakeAudio {
                 asked: asked_tx.clone(),
                 hold: held.clone(),
+                drop_sync: dropping.clone(),
             }))
         });
         let bluez = self.bus.address().to_string();
@@ -4513,6 +4535,7 @@ impl Fixture {
             asked,
             started,
             hold,
+            drop_sync,
             task: tokio::spawn(offering.run()),
         }
     }
@@ -4725,6 +4748,35 @@ async fn the_default_input_goes_back_after_pipewire_went() {
         *offering.control.availability().borrow(),
         mic::Availability::Unknown
     );
+}
+
+/// A put back of the default input the audio side took but never carried
+/// out - its sync dropped as it ends - is asked again of the next side, once
+/// PipeWire is back with the default input still naming the source: the
+/// side is not asked to quit before (#209).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_put_back_the_side_took_but_never_served_is_asked_again() {
+    let (_fixture, _app, mut offering, side) = offered().await;
+    offering.drop_next_sync();
+    offering.switch.send_replace(false);
+    assert!(matches!(offering.next().await, AudioRequest::Source(false)));
+    assert!(matches!(
+        offering.next().await,
+        AudioRequest::SetDefault(Some(name)) if name == LAPTOP_MIC
+    ));
+    side.send(AudioEvent::Gone("the connection to PipeWire ended".into()))
+        .unwrap();
+    let side = offering.side().await;
+    side.send(AudioEvent::Ready {
+        default: Some(mic::NODE_NAME.into()),
+    })
+    .unwrap();
+    assert!(matches!(
+        offering.next().await,
+        AudioRequest::SetDefault(Some(name)) if name == LAPTOP_MIC
+    ));
+    assert!(matches!(offering.next().await, AudioRequest::Quit));
+    assert!(offering.settled().await);
 }
 
 /// A recording that starts the microphone, and ends: the stream stops, and

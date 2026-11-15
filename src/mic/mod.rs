@@ -119,9 +119,10 @@ pub enum AudioEvent {
 
 /// The audio side, as the task holds it.
 pub trait AudioSide: Send + Sync {
-    /// Hands `request` over: false once the audio side has ended, which
-    /// drops it. A request handed over before the side ended and never
-    /// carried out is dropped as it ends, so a `oneshot` in it fails.
+    /// Hands `request` over: false if it is dropped - always once the audio
+    /// side has ended, and an audio packet the side has no room for. A
+    /// request handed over before the side ended and never carried out is
+    /// dropped as it ends, so a `oneshot` in it fails.
     fn ask(&self, request: AudioRequest) -> bool;
 }
 
@@ -570,6 +571,11 @@ pub struct Mic {
     source_up: bool,
     stream: Stream,
     default_input: DefaultInput,
+    /// The put back of the default input last asked, until the audio side
+    /// has answered a sync asked after it.
+    put_back: Option<PutBack>,
+    /// Audio packets the audio side had no room for.
+    audio_dropped: u64,
     dropped_at_start: u64,
     /// Set once everything was put back for the quit: nothing is started
     /// again.
@@ -627,6 +633,8 @@ impl Mic {
             source_up: false,
             stream: Stream::default(),
             default_input: DefaultInput::default(),
+            put_back: None,
+            audio_dropped: 0,
             dropped_at_start: 0,
             quitting: false,
         };
@@ -691,11 +699,15 @@ impl Mic {
                 Some(audio) = self.audio_in.recv() => {
                     if self.stream.streaming() == Some(audio.mac)
                         && let Some(side) = &self.audio
+                        && !side.ask(AudioRequest::Audio(audio.packet))
                     {
-                        side.ask(AudioRequest::Audio(audio.packet));
+                        self.audio_dropped += 1;
                     }
                 }
                 Some(event) = self.audio_events.recv() => self.heard(event),
+                answered = put_back_answered(&mut self.put_back), if self.put_back.is_some() => {
+                    self.put_back_answered(answered);
+                }
                 changed = self.snapshots.changed(), if snapshots_open => {
                     if changed.is_err() {
                         snapshots_open = false;
@@ -785,11 +797,38 @@ impl Mic {
                     self.availability
                         .send_replace(Availability::Unavailable(reason));
                 }
+                // A put back the side never answered may never have
+                // reached PipeWire: the next side asks it again.
+                if let Some(put_back) = self.put_back.take()
+                    && !put_back.answer.is_some_and(|mut a| a.try_recv().is_ok())
+                {
+                    self.default_input.not_put_back(put_back.before);
+                }
                 self.audio = None;
                 self.ready = false;
                 self.recording = false;
                 self.source_up = false;
                 self.restart_at = Some(tokio::time::Instant::now() + wait);
+            }
+        }
+    }
+
+    /// What the audio side's answer to a put back's sync says.
+    fn put_back_answered(&mut self, answered: Answered) {
+        match answered {
+            Answered::Yes => self.put_back = None,
+            // The side is ending: its `Gone` decides, if it comes by the
+            // deadline.
+            Answered::Dropped => {
+                if let Some(put_back) = &mut self.put_back {
+                    put_back.answer = None;
+                }
+            }
+            Answered::Late => {
+                tracing::warn!(
+                    "PipeWire's thread did not confirm the put back within {SYNC_LIMIT:?}"
+                );
+                self.put_back = None;
             }
         }
     }
@@ -865,8 +904,14 @@ impl Mic {
 
         // Once the switch is off, and nothing is left to put back, the
         // audio side ends, and so does the wait to start it again: turned
-        // on again, it is tried at once.
-        if !on && !self.source_up && !self.default_input.is_made() && !self.stream.is_switching() {
+        // on again, it is tried at once. A put back not answered yet is
+        // waited for, as its side ending first would leave it undone.
+        if !on
+            && !self.source_up
+            && !self.default_input.is_made()
+            && self.put_back.is_none()
+            && !self.stream.is_switching()
+        {
             if let Some(side) = self.audio.take() {
                 side.ask(AudioRequest::Quit);
                 self.audio_events = mpsc::unbounded_channel().1;
@@ -905,8 +950,19 @@ impl Mic {
                     "The default input put back to {}",
                     before.as_deref().unwrap_or("none")
                 );
-                if !side.ask(AudioRequest::SetDefault(before.clone())) {
-                    // The side ended unheard: put back by the next one.
+                // Put back once the side answers a sync asked after it;
+                // the side ended first, by the next one.
+                let (done, answer) = oneshot::channel();
+                if side.ask(AudioRequest::SetDefault(before.clone()))
+                    && side.ask(AudioRequest::Sync(done))
+                {
+                    self.put_back = Some(PutBack {
+                        before,
+                        answer: Some(answer),
+                        deadline: tokio::time::Instant::now() + SYNC_LIMIT,
+                    });
+                } else {
+                    self.put_back = None;
                     self.default_input.not_put_back(before);
                 }
             }
@@ -935,7 +991,7 @@ impl Mic {
             }
             Do::Start(mac) => {
                 tracing::info!("Starting the microphone of {mac}: something records");
-                self.dropped_at_start = self.coordinator.mic_audio_dropped();
+                self.dropped_at_start = self.dropped();
                 let done = self.coordinator.command(mac, Command::Microphone(true));
                 tokio::spawn(async move {
                     if let Err(e) = done.await {
@@ -944,7 +1000,7 @@ impl Mic {
                 });
             }
             Do::Stop(mac) => {
-                let dropped = self.coordinator.mic_audio_dropped() - self.dropped_at_start;
+                let dropped = self.dropped() - self.dropped_at_start;
                 tracing::info!(
                     "Stopping the microphone of {mac}; {dropped} audio packet(s) dropped, \
                      this side behind"
@@ -965,6 +1021,12 @@ impl Mic {
                 }));
             }
         }
+    }
+
+    /// Audio packets dropped on their way to the source: by the read loop,
+    /// and for want of room on the audio side.
+    fn dropped(&self) -> u64 {
+        self.coordinator.mic_audio_dropped() + self.audio_dropped
     }
 
     /// The card switch after a stop: `None` without an audio side to ask.
@@ -1045,6 +1107,45 @@ impl Mic {
             }
         }
         self.sync_audio().await;
+    }
+}
+
+/// A put back of the default input asked of the audio side.
+struct PutBack {
+    /// The default input put back: the node it names, or none.
+    before: Option<String>,
+    /// The answer to the sync asked after it; `None` once dropped unanswered.
+    answer: Option<oneshot::Receiver<()>>,
+    /// When the answer, or the side's `Gone` after one dropped, is given up
+    /// on: [`SYNC_LIMIT`] after the ask.
+    deadline: tokio::time::Instant,
+}
+
+/// What came of a put back's sync.
+enum Answered {
+    Yes,
+    /// Dropped unanswered: the audio side is ending.
+    Dropped,
+    /// Its deadline passed.
+    Late,
+}
+
+/// What comes of `put_back`'s sync, or never without a put back.
+async fn put_back_answered(put_back: &mut Option<PutBack>) -> Answered {
+    let Some(PutBack {
+        answer, deadline, ..
+    }) = put_back
+    else {
+        return std::future::pending().await;
+    };
+    let Some(answer) = answer else {
+        tokio::time::sleep_until(*deadline).await;
+        return Answered::Late;
+    };
+    match tokio::time::timeout_at(*deadline, answer).await {
+        Ok(Ok(())) => Answered::Yes,
+        Ok(Err(_)) => Answered::Dropped,
+        Err(_) => Answered::Late,
     }
 }
 
