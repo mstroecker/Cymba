@@ -39,6 +39,8 @@ fn describe(packet: &[u8]) -> String {
         Ok(Message::ConversationAwareness(on)) => format!("Conversation Awareness: {on}"),
         Ok(Message::SpeechLevel(level)) => format!("speech level {}", describe_level(level)),
         Ok(Message::DeviceInfo(info)) => format!("device information, {info}"),
+        Ok(Message::MicAnswer(answer)) => format!("microphone answer: {answer:?}"),
+        Ok(Message::MicAudio) => "microphone audio".to_string(),
         Ok(Message::Unknown { opcode: Some(_) }) => "not read by the app".to_string(),
         Ok(Message::Unknown { opcode: None }) => "no AAP header".to_string(),
         Err(e) => format!("unparsable: {e}"),

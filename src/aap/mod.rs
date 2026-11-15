@@ -11,6 +11,7 @@ pub mod ear;
 pub mod info;
 pub mod keys;
 pub mod message;
+pub mod mic;
 pub mod name;
 pub mod noise;
 
