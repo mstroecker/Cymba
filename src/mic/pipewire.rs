@@ -53,7 +53,7 @@ const MAX_BUFFERED: usize = mic::SAMPLE_RATE as usize / 5;
 const PREFILL: usize = 2 * 4 * mic::FRAME_SAMPLES;
 
 /// How long each step of a card switch may take before it is given up: a
-/// choice, as long as the probe gave each `pactl` call.
+/// choice, as long as `mic_probe`'s `PACTL_LIMIT`.
 const SWITCH_STEP_LIMIT: Duration = Duration::from_secs(5);
 
 /// How often a card switch under way is looked at, for its limit.

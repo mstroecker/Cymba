@@ -2304,7 +2304,7 @@ impl Coordinator {
     }
 
     /// Sends a command to one device, over its AAP link, and resolves to how
-    /// it went: every command goes this way, the window's and the tray's, and
+    /// it went: every command goes this way - the window's, the tray's, the microphone task's - and
     /// every caller hears whether it was done (#54).
     ///
     /// The command takes its place in the link's queue here, in the call,

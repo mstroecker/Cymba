@@ -67,7 +67,9 @@ levels while the user speaks into the microphone - and lower the music
 
 - **Only if the link reads it on** at the start. Off or not reported yet, it is left alone.
 - **On again once the stream is over,** and only if the link reads it off then. Read on
-  after it read off, someone turned it on - the window, a phone - and it is left as it is.
+  after it read off, someone turned it on - the window, or a report from the pods - and it
+  is left as it is. A change made on a phone may never reach the app
+  ([conversation-awareness.md](conversation-awareness.md#the-setting)).
   Until the link has read it off once, a reading of on is the setting before the command
   landed, and is waited out.
 - **Over the next link,** when the link went first: on again once a new link reads it off.
@@ -133,9 +135,9 @@ With nothing playing before, the switch is done after step 2.
   not the AudioSpecificConfig's 48 kHz. PipeWire converts it to what each app records.
   Whether it sounds right is open
   ([protocol/aap/microphone.md](../protocol/aap/microphone.md#open-questions)).
-- **0.2 s at most wait** for the source; older samples go. After it starts or runs dry,
-  the source plays nothing until two packets' worth is in, so packets that come in bursts
-  do not run it dry at once. A frame that does not decode is counted and logged when the
+- **`MAX_BUFFERED` samples at most wait** for the source (`mic::pipewire`); older ones
+  go. After it starts or runs dry, the source plays nothing until `PREFILL` samples are in,
+  so packets that come in bursts do not run it dry at once. A frame that does not decode is counted and logged when the
   recording ends.
 
 ## The decoder
@@ -145,7 +147,7 @@ FFmpeg of the app's own.
 
 - **Loaded when the switch is first turned on,** not linked: a release binary linked to
   one libavcodec soname would not start on a system with another, or none. The sonames
-  from libavcodec 63 (FFmpeg 9) down to 58 (FFmpeg 4.0) are tried, and the one that loads is
+  from `decoder::NEWEST_MAJOR` down to `decoder::OLDEST_MAJOR` are tried, and the one that loads is
   used if its own `avcodec_version` says the same major. Of FFmpeg's structures only the
   first fields of `AVCodecParameters` and `AVFrame` are touched, which every major in that
   range shares; a newer major is not tried until checked.
@@ -153,6 +155,9 @@ FFmpeg of the app's own.
   does not open makes the microphone unavailable, with the reason in Preferences.
 
 ## The PipeWire side
+
+The test `mic::pipewire::tests::serves_a_pipewire_of_its_own` runs it against a PipeWire
+daemon of its own ([protocol/linux/desktop.md](../protocol/linux/desktop.md#runs)).
 
 On a thread of its own (`mic::pipewire`), running PipeWire's loop: PipeWire's objects
 never leave the thread that made them, and its loop blocks. The task asks it things over a
@@ -185,6 +190,10 @@ On a Pro 3, with the switch on and music playing over A2DP:
   within about half a second, and the music plays on in stereo on both pods.
 - The recording sounds right at 64 kHz: speech at its pitch and speed.
 - Conversation Awareness, on before, is off while recording and on again after.
+- Whether the pods report the setting (`0x28`) after it is turned off for the stream: a
+  late report of on would read as the user's, and leave it off after the stream.
+- After a stop, the log's "Card switch N" and "Played ... again after the card switch":
+  the players played again, and which transport is taken when BlueZ briefly shows two.
 - `mic::STOP_AFTER` after the recording ends the stream stops, the card is switched, the
   music pauses briefly and plays again, on both pods. How often more than one switch is
   needed, and whether `mic::RESUME_WAIT` is long enough.

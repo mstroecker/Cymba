@@ -56,13 +56,13 @@ PipeWire 1.6.10 against a daemon of a test's own, with no session manager, on
   sets them, as WirePlumber does: the run set `dsp` mode with a format by hand.
 - **The default input is the `default` metadata's `default.configured.audio.source`,** on
   subject 0, of type `Spa:String:JSON`, its value `{ "name": "<node.name>" }`. Set or
-  cleared by a client, it is told back to every client bound to the metadata. GNOME's
+  cleared by a client, it was told back to that client (run below). GNOME's
   Sound panel and `pactl set-default-source` set this key, which WirePlumber keeps and
   follows when picking the input it uses (WirePlumber's documentation; not run here).
 - **A Bluetooth device's card is a `bluez5` device object** with `api.bluez5.address`
   its address, its profiles its `EnumProfile` params and its profile now its `Profile`
   param, each with an index and a name; one is named `off`. Setting `Profile` to an
-  index switches the card, as `pactl set-card-profile` does (PipeWire's
+  index switches the card, as `pactl set-card-profile` does (PipeWire 1.6.10,
   `spa/plugins/bluez5/bluez5-device.c`, and the `pactl` switch of
   [aap/microphone.md](../aap/microphone.md#a2dp); the param itself not run on a pair here).
 
@@ -244,7 +244,7 @@ well-known name (`xdg-dbus-proxy(1)`, 0.1.9, unless another source is named):
 **PipeWire: a daemon of a test's own, 2026-11-15 (#209).** `pipewire` 1.6.10 with the
 native protocol, access, metadata, client-node, adapter and link-factory modules, a
 `default` metadata and a dummy driver, its socket in a temporary directory, no session
-manager: `mic::pipewire::tests::serves_a_pipewire_of_its_own`, which CI runs too. A
+manager, and a client that offered an `Audio/Source` stream and set the default input. A
 `pw-record` was given ports with `pw-cli set-param <id> PortConfig '{ direction: Input,
 mode: dsp, format: { ... } }'`, the source likewise, and linked with `pw-link`; the
 source's stream went `Paused` to `Streaming`, and back once `pw-record` was killed. The

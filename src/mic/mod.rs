@@ -66,7 +66,7 @@ pub const SWITCH_TRIES: u32 = 3;
 
 /// How long a new A2DP transport is given to come after a card switch, a
 /// player the switch paused to report the pause, and A2DP to play after
-/// the player was played again: the probe's.
+/// the player was played again: `mic_probe`'s `RESUME_WAIT`.
 pub const RESUME_WAIT: Duration = Duration::from_secs(5);
 
 /// How often the transport and the players are read meanwhile.
@@ -539,8 +539,9 @@ pub struct Mic {
     resume_wait: Duration,
     /// The audio side, while it runs, and what it tells.
     audio: Option<Arc<dyn AudioSide>>,
+    /// What the audio side that runs now tells: a channel of its own per
+    /// side, so one that was ended - its `Gone` late - tells nothing.
     audio_events: mpsc::UnboundedReceiver<AudioEvent>,
-    audio_events_tx: mpsc::UnboundedSender<AudioEvent>,
     /// Whether the audio side has said it is ready.
     ready: bool,
     /// When to start the audio side again, after it ended.
@@ -574,7 +575,7 @@ impl Mic {
         session: Connect,
     ) -> (Self, MicControl) {
         let (requests_tx, requests) = mpsc::unbounded_channel();
-        let (audio_events_tx, audio_events) = mpsc::unbounded_channel();
+        let (_, audio_events) = mpsc::unbounded_channel();
         let initial = match &missing {
             Some(reason) => Availability::Unavailable(reason.clone()),
             None => Availability::Unknown,
@@ -599,7 +600,6 @@ impl Mic {
             resume_wait: RESUME_WAIT,
             audio: None,
             audio_events,
-            audio_events_tx,
             ready: false,
             restart_at: None,
             backoff: Backoff::default(),
@@ -774,7 +774,9 @@ impl Mic {
         // The audio side runs while the switch is on, for the source and
         // for whether anything records.
         if on && self.missing.is_none() && self.audio.is_none() && self.restart_at.is_none() {
-            match (self.start_audio)(self.audio_events_tx.clone()) {
+            let (events, audio_events) = mpsc::unbounded_channel();
+            self.audio_events = audio_events;
+            match (self.start_audio)(events) {
                 Ok(side) => {
                     self.started_at = Some(now);
                     self.audio = Some(side);

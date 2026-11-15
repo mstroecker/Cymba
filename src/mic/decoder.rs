@@ -316,9 +316,9 @@ mod tests {
     use super::*;
 
     /// With a libavcodec on the machine, its decoder opens with the
-    /// microphone's AudioSpecificConfig, and a frame of bytes that are no
-    /// AAC-ELD is an error that adds no samples, not a crash. Without one,
-    /// the reason names the sonames tried.
+    /// microphone's AudioSpecificConfig, and bytes that are no AAC-ELD frame
+    /// crash nothing and add no more than a frame's worth of samples a call.
+    /// Without one, the reason names libavcodec.
     #[test]
     fn opens_and_refuses_what_is_no_frame() {
         match Decoder::new() {
