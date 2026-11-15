@@ -10,7 +10,8 @@ Flatpak's bus proxy lets through. Checked on hardware where a run below says so;
 is from its specification, UPower also from its source, GLib, GNOME Shell,
 gnome-session, logind, Flatpak and the bus proxy from their documentation and source, and the
 key path is only as understood, not traced. PipeWire's input and default input ran
-against a PipeWire daemon of a test's own.
+against a PipeWire daemon of a test's own; the order of a client's requests is from
+PipeWire's headers.
 
 The app acts on these in `volume`, `media`, `mic`, `notify`, `nearby`, `presence` and
 `ui::connect`: [app/volume.md](../../app/volume.md), [app/mic.md](../../app/mic.md),
@@ -72,6 +73,13 @@ PipeWire 1.6.10 against a daemon of a test's own, with no session manager, on
   directory - `PIPEWIRE_RUNTIME_DIR`, else `XDG_RUNTIME_DIR` - and then in
   `/run/pipewire` (PipeWire 1.6.10, `local-socket.c`, `try_connect_name`; 1.0.5 did the
   same, run below).
+- **A client's requests are handled in order, and a core sync answers after them:** the
+  server handles a client's methods in the order sent and delivers events in order, so
+  the `done` a `sync` asks for comes after every method sent before it, and the events
+  those caused (PipeWire 1.6.10, `pipewire/core.h`, `pw_core_methods.sync`). It says the
+  server has them, not that a session manager has acted on them: with WirePlumber,
+  whether a change to the `default` metadata is told back before or after that `done`
+  is open ([Open questions](#open-questions)).
 - **A `pw::channel` send succeeds after its receiver is gone:** the queue is shared by
   sender and receiver and lives while a sender does; only a poisoned lock or a failed
   pipe write fails it. **Its receiver serves the queue under the lock a send takes:** the
@@ -278,6 +286,11 @@ bluetoothd at 9%, then 4%. UPower 1.91.5 listed it as headphones at that level, 
 state unknown and `WarningLevel` none, and `gsd-power` sent nothing.
 
 ## Open questions
+
+- With WirePlumber, whether a change to the `default` metadata's
+  `default.configured.audio.source`, set just before a core `sync`, is told back to the
+  client before that sync's `done` or after it ([PipeWire](#pipewire)). Not run here:
+  the run below had no session manager.
 
 - In the Flatpak, logind sees `xdg-dbus-proxy` as the caller of `session/auto`: whether it
   still resolves to the user's graphical session (#196).
