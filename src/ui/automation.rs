@@ -90,6 +90,7 @@
 //! | `battery-notifications` | its switch for low battery notifications, as saved: on unless turned off |
 //! | `nearby-notifications` | its switch for nearby notifications, as saved: on unless turned off |
 //! | `pause-on-ear` | its switch for pausing the media when a pod leaves an ear, as saved: on unless turned off |
+//! | `mic-over-aap` | its switch for the AirPods microphone over AAP, as saved: off unless turned on; its row, `mic-over-aap-row`, says why while it cannot be offered - in the fake world, no PipeWire is reached |
 //! | `scan-hint` | the scanning hint's group, at the top of Preferences: visible while a powered adapter listens by discovery |
 //! | `scan-pause-row` | its row; the title is `Scanning`, or `Paused until` and the local time the pause ends |
 //! | `scan-pause` | its button; clicked, it pauses the app's discovery for `DISCOVERY_PAUSE`, or that long from then when paused already |

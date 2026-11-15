@@ -59,6 +59,7 @@ use cymba::harness::pods::{ADDRESS_ROTATION, PRO_2_USB_C, PRO_3, Part, Pods};
 use cymba::harness::{FakePlayer, PrivateBus, World};
 use cymba::keystore::{KEYS_FILE, Keystore, PairKeys};
 use cymba::media::{Media, MediaControl, Playback, Switch};
+use cymba::mic::{self, AudioEvent, AudioRequest, AudioSide, Mic, MicControl};
 use cymba::podstate::{Command, Coordinator, DataSource, Snapshot};
 use cymba::volume::{self, Volume, VolumeControl};
 
@@ -4340,4 +4341,252 @@ async fn a_connect_while_bluez_is_away_starts_nothing() {
         .expect("timed out connecting")
         .expect_err("connected with BlueZ away");
     assert_eq!(fixture.bus.activations(), 0, "BlueZ started");
+}
+
+/// The audio side the microphone's task is handed in a test, in place of
+/// PipeWire: what the task asks goes to the test, but a sync, which it
+/// answers at once, as nothing it is asked is left to carry out.
+struct FakeAudio(mpsc::UnboundedSender<AudioRequest>);
+
+impl AudioSide for FakeAudio {
+    fn ask(&self, request: AudioRequest) -> bool {
+        match request {
+            AudioRequest::Sync(done) => done.send(()).is_ok(),
+            other => self.0.send(other).is_ok(),
+        }
+    }
+}
+
+/// The microphone's task as `main.rs` wires it (#209), but for PipeWire: the
+/// test hears what the task asks of the audio side and tells it what
+/// PipeWire would. The card switch reads the transport on the test's bus,
+/// where the fake BlueZ is, and the players on a session bus of its own -
+/// never the user's - with none on it.
+struct Offering {
+    /// The players' bus; stopped with the fixture.
+    _session: PrivateBus,
+    /// The Preferences switch, as the app action hands it on.
+    switch: watch::Sender<bool>,
+    control: MicControl,
+    /// What the task asks of the audio side.
+    asked: mpsc::UnboundedReceiver<AudioRequest>,
+    /// Where each audio side the task starts tells it things.
+    started: mpsc::UnboundedReceiver<mpsc::UnboundedSender<AudioEvent>>,
+    task: JoinHandle<()>,
+}
+
+impl Drop for Offering {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// How long the microphone's task waits in a test: after the last recording
+/// for the stop, and for each step of the card switch. Short, as nothing in
+/// the tests is due then.
+const MIC_WAIT: Duration = Duration::from_millis(100);
+
+impl Offering {
+    /// The next audio side the task starts, to tell things through.
+    async fn side(&mut self) -> mpsc::UnboundedSender<AudioEvent> {
+        timeout(TIMEOUT, self.started.recv())
+            .await
+            .expect("the task starts an audio side")
+            .expect("the task runs")
+    }
+
+    /// The next request but audio, which goes on while the microphone runs.
+    async fn next(&mut self) -> AudioRequest {
+        timeout(TIMEOUT, async {
+            loop {
+                match self.asked.recv().await.expect("the task runs") {
+                    AudioRequest::Audio(_) => {}
+                    other => return other,
+                }
+            }
+        })
+        .await
+        .expect("the task asks something")
+    }
+
+    /// Waits for the first audio packet handed on.
+    async fn audio(&mut self) -> Vec<u8> {
+        timeout(TIMEOUT, async {
+            loop {
+                if let AudioRequest::Audio(packet) = self.asked.recv().await.expect("the task runs")
+                {
+                    return packet;
+                }
+            }
+        })
+        .await
+        .expect("audio comes")
+    }
+
+    /// Whether the stream is idle, once the task has taken every event told
+    /// so far.
+    async fn settled(&self) -> bool {
+        timeout(TIMEOUT, self.control.settled())
+            .await
+            .expect("the microphone's task answers")
+    }
+}
+
+impl Fixture {
+    /// Starts the microphone's task on `app`'s coordinator, with the switch
+    /// on.
+    async fn start_offering(&self, app: &App) -> Offering {
+        let session = PrivateBus::start().expect("dbus-daemon starts");
+        let (switch, on) = watch::channel(true);
+        let (asked_tx, asked) = mpsc::unbounded_channel();
+        let (started_tx, started) = mpsc::unbounded_channel();
+        let start: mic::StartAudio = Box::new(move |events| {
+            let _ = started_tx.send(events);
+            Ok(Arc::new(FakeAudio(asked_tx.clone())))
+        });
+        let bluez = self.bus.address().to_string();
+        let players = session.address().to_string();
+        let (offering, control) = Mic::new(
+            app.coordinator.clone(),
+            on,
+            None,
+            start,
+            Box::new(move || zbus::connection::Builder::address(bluez.as_str())),
+            Box::new(move || zbus::connection::Builder::address(players.as_str())),
+        );
+        let offering = offering
+            .with_call_limit(MEDIA_CALL_LIMIT)
+            .with_waits(MIC_WAIT, MIC_WAIT);
+        Offering {
+            _session: session,
+            switch,
+            control,
+            asked,
+            started,
+            task: tokio::spawn(offering.run()),
+        }
+    }
+}
+
+/// The input the user had, which the tests' PipeWire names as the default.
+const LAPTOP_MIC: &str = "alsa_input.pci-0000_00_1f.3.analog-stereo";
+
+/// A pair with Conversation Awareness on, attached on AAP with the
+/// microphone's switch on and PipeWire ready: the source up, and made the
+/// default input in place of [`LAPTOP_MIC`], which PipeWire has read back.
+async fn offered() -> (Fixture, App, Offering, mpsc::UnboundedSender<AudioEvent>) {
+    let fixture = Fixture::new(&[(PAIR, PRO_3, PAIR_LEVELS)]).await;
+    fixture
+        .world
+        .with_pods(PAIR, |pods| pods.set_conversation_awareness(true))
+        .await
+        .unwrap();
+    let mut app = fixture.start_app().await;
+    app.stop_listening().await;
+    let mut offering = fixture.start_offering(&app).await;
+    let side = offering.side().await;
+    side.send(AudioEvent::Ready {
+        default: Some(LAPTOP_MIC.into()),
+    })
+    .unwrap();
+    app.attach(PAIR).await;
+    app.until("Conversation Awareness reported on", |s| {
+        s.states.get(&PAIR).and_then(|p| p.conversation_awareness) == Some(true)
+    })
+    .await;
+    assert!(matches!(offering.next().await, AudioRequest::Source(true)));
+    assert!(matches!(
+        offering.next().await,
+        AudioRequest::SetDefault(Some(name)) if name == mic::NODE_NAME
+    ));
+    side.send(AudioEvent::Default(Some(mic::NODE_NAME.into())))
+        .unwrap();
+    (fixture, app, offering, side)
+}
+
+/// Where `packet` first comes among what `pair` was sent, failing the test
+/// if it never did.
+async fn sent_at(fixture: &Fixture, pair: Address, packet: &[u8]) -> usize {
+    let received = fixture.world.received(pair).await.unwrap();
+    received
+        .iter()
+        .position(|sent| sent == packet)
+        .unwrap_or_else(|| panic!("{packet:02x?} never sent"))
+}
+
+/// A recording turns Conversation Awareness off and starts the microphone,
+/// in that order, and its audio reaches the source. Once it ends, the stream
+/// stops, the card is switched off and back, and Conversation Awareness goes
+/// on again, after the stop. The switch off takes the source down and puts
+/// the user's default input back (#209).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_recording_runs_the_microphone_around_conversation_awareness() {
+    let (fixture, _app, mut offering, side) = offered().await;
+
+    side.send(AudioEvent::Recording(true)).unwrap();
+    let packet = offering.audio().await;
+    assert!(cymba::aap::mic::is_audio_packet(&packet));
+    let off = sent_at(&fixture, PAIR, &conversation::set_packet(false)).await;
+    let start = sent_at(&fixture, PAIR, &cymba::aap::mic::START).await;
+    assert!(off < start, "Conversation Awareness off before the start");
+    let pods_ca = |pods: &mut Pods| pods.conversation_awareness();
+    assert!(!fixture.world.with_pods(PAIR, pods_ca).await.unwrap());
+
+    side.send(AudioEvent::Recording(false)).unwrap();
+    let AudioRequest::SwitchCard { mac, done } = offering.next().await else {
+        panic!("not the card switch");
+    };
+    assert_eq!(mac, PAIR);
+    let stop = sent_at(&fixture, PAIR, &cymba::aap::mic::STOP).await;
+    assert!(stop > start);
+    assert!(
+        !fixture
+            .world
+            .with_pods(PAIR, |pods| pods.mic_running())
+            .await
+            .unwrap()
+    );
+    done.send(Ok(())).unwrap();
+    eventually("the stream idle after the card switch", || {
+        offering.settled()
+    })
+    .await;
+    let on = sent_at(&fixture, PAIR, &conversation::set_packet(true)).await;
+    assert!(on > stop, "Conversation Awareness on after the stop");
+    assert!(fixture.world.with_pods(PAIR, pods_ca).await.unwrap());
+
+    offering.switch.send_replace(false);
+    assert!(matches!(offering.next().await, AudioRequest::Source(false)));
+    assert!(matches!(
+        offering.next().await,
+        AudioRequest::SetDefault(Some(name)) if name == LAPTOP_MIC
+    ));
+    assert!(matches!(offering.next().await, AudioRequest::Quit));
+}
+
+/// A default input the user chose while the source was up stays when the
+/// source goes: nothing is put back (#209).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_users_default_input_wins() {
+    let (_fixture, _app, mut offering, side) = offered().await;
+    side.send(AudioEvent::Default(Some("usb_headset".into())))
+        .unwrap();
+    assert!(offering.settled().await);
+    offering.switch.send_replace(false);
+    assert!(matches!(offering.next().await, AudioRequest::Source(false)));
+    assert!(matches!(offering.next().await, AudioRequest::Quit));
+}
+
+/// The pair's link going while the microphone runs ends the stream: no stop
+/// is sent, no card is switched, and the source goes with the pair (#209).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_link_going_ends_the_stream() {
+    let (fixture, mut app, mut offering, side) = offered().await;
+    side.send(AudioEvent::Recording(true)).unwrap();
+    offering.audio().await;
+    app.detach(PAIR).await;
+    assert!(matches!(offering.next().await, AudioRequest::Source(false)));
+    assert!(offering.settled().await);
+    let received = fixture.world.received(PAIR).await.unwrap();
+    assert!(!received.contains(&cymba::aap::mic::STOP.to_vec()));
 }

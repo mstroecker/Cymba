@@ -225,6 +225,8 @@ struct TurnedOff {
 pub struct Stream {
     state: State,
     turned_off: Option<TurnedOff>,
+    /// [`STOP_AFTER`] but in a test, which may ask for less.
+    stop_after: Duration,
 }
 
 impl Default for Stream {
@@ -232,6 +234,7 @@ impl Default for Stream {
         Self {
             state: State::Idle,
             turned_off: None,
+            stop_after: STOP_AFTER,
         }
     }
 }
@@ -263,7 +266,7 @@ impl Stream {
             State::Running { mac } if !view.recording => {
                 self.state = State::Lingering {
                     mac,
-                    until: now + STOP_AFTER,
+                    until: now + self.stop_after,
                 };
             }
             State::Lingering { mac, .. } if view.recording => {
@@ -532,6 +535,8 @@ pub struct Mic {
     /// The buses the card switch calls on: BlueZ's, the players'.
     buses: Arc<Buses>,
     limit: Duration,
+    /// [`RESUME_WAIT`] but in a test, which may ask for less.
+    resume_wait: Duration,
     /// The audio side, while it runs, and what it tells.
     audio: Option<Arc<dyn AudioSide>>,
     audio_events: mpsc::UnboundedReceiver<AudioEvent>,
@@ -549,6 +554,9 @@ pub struct Mic {
     stream: Stream,
     default_input: DefaultInput,
     dropped_at_start: u64,
+    /// Set once everything was put back for the quit: nothing is started
+    /// again.
+    quitting: bool,
 }
 
 impl Mic {
@@ -588,6 +596,7 @@ impl Mic {
                 session: tokio::sync::Mutex::new(Bus::new("the media players", session)),
             }),
             limit: media::CALL_LIMIT,
+            resume_wait: RESUME_WAIT,
             audio: None,
             audio_events,
             audio_events_tx,
@@ -601,6 +610,7 @@ impl Mic {
             stream: Stream::default(),
             default_input: DefaultInput::default(),
             dropped_at_start: 0,
+            quitting: false,
         };
         (
             mic,
@@ -616,6 +626,17 @@ impl Mic {
     #[cfg(feature = "harness")]
     pub fn with_call_limit(mut self, limit: Duration) -> Self {
         self.limit = limit;
+        self
+    }
+
+    /// Stops the stream `stop_after` after the last recording, and waits
+    /// `resume_wait` at each step of the card switch, in place of
+    /// [`STOP_AFTER`] and [`RESUME_WAIT`]: for a test, which need not wait
+    /// seconds for what it does not watch.
+    #[cfg(feature = "harness")]
+    pub fn with_waits(mut self, stop_after: Duration, resume_wait: Duration) -> Self {
+        self.stream.stop_after = stop_after;
+        self.resume_wait = resume_wait;
         self
     }
 
@@ -748,6 +769,9 @@ impl Mic {
 
     /// Brings everything in line with what the task knows now.
     fn settle(&mut self, now: Instant) {
+        if self.quitting {
+            return;
+        }
         let on = self.on();
         // The audio side runs while the switch is on, for the source and
         // for whether anything records.
@@ -896,13 +920,13 @@ impl Mic {
     /// The card switch after a stop: `None` without an audio side to ask.
     fn card_switch(&self, mac: Address) -> Option<impl Future<Output = ()> + Send + use<>> {
         let side = self.audio.clone()?;
-        let (buses, limit) = (self.buses.clone(), self.limit);
+        let (buses, limit, wait) = (self.buses.clone(), self.limit, self.resume_wait);
         Some(async move {
             // One switch at a time: a stop comes only after the last
             // switch is done.
             let mut bluez = buses.bluez.lock().await;
             let mut session = buses.session.lock().await;
-            match switch_card(mac, &*side, &mut bluez, &mut session, limit).await {
+            match switch_card(mac, &*side, &mut bluez, &mut session, limit, wait).await {
                 Ok(()) => tracing::info!("The card of {mac} is back, and plays"),
                 Err(e) => tracing::warn!("The card switch of {mac} after the stop: {e:#}"),
             }
@@ -924,6 +948,7 @@ impl Mic {
     /// Stops a stream that runs, puts Conversation Awareness and the default
     /// input back, and takes the source down - see [`MicControl::shut_down`].
     async fn shut_down(&mut self) {
+        self.quitting = true;
         let mut waits = Vec::new();
         if let Some(mac) = self.stream.streaming() {
             tracing::info!("Stopping the microphone of {mac}: the app quits");
@@ -1001,6 +1026,7 @@ async fn switch_card(
     bluez: &mut Bus,
     session: &mut Bus,
     limit: Duration,
+    resume_wait: Duration,
 ) -> Result<()> {
     // The players playing before, each to be played again if the switch
     // pauses it. Without them, the switch goes on all the same.
@@ -1050,7 +1076,7 @@ async fn switch_card(
                 Ok(None) => went = true,
                 Err(_) => {}
             }
-            if new || tokio::time::Instant::now() >= switched + RESUME_WAIT {
+            if new || tokio::time::Instant::now() >= switched + resume_wait {
                 break;
             }
             tokio::time::sleep(RESUME_POLL).await;
@@ -1072,11 +1098,11 @@ async fn switch_card(
         futures_util::future::join_all(
             playing
                 .iter()
-                .map(|player| play_again(conn, player, switched, limit)),
+                .map(|player| play_again(conn, player, switched, limit, resume_wait)),
         )
         .await;
         let played = tokio::time::Instant::now();
-        let plays = wait_for(played, RESUME_WAIT, || async {
+        let plays = wait_for(played, resume_wait, || async {
             matches!(a2dp(&system, mac, limit).await, Ok(Some((_, true))))
         })
         .await;
@@ -1098,6 +1124,7 @@ async fn play_again(
     player: &Player,
     switched: tokio::time::Instant,
     limit: Duration,
+    resume_wait: Duration,
 ) {
     let status = loop {
         let read = media::list_players(conn, limit).await.ok();
@@ -1108,7 +1135,7 @@ async fn play_again(
                 .map(|p| p.status)
         });
         if status != Some(Playback::Playing)
-            || tokio::time::Instant::now() >= switched + RESUME_WAIT
+            || tokio::time::Instant::now() >= switched + resume_wait
         {
             break status;
         }
