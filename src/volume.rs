@@ -554,6 +554,22 @@ pub fn a2dp_active_in(objects: &ManagedObjects, mac: Address) -> bool {
         .any(|found| found.active)
 }
 
+/// The path of an A2DP transport of the pair at `mac` among `objects`,
+/// BlueZ's, with whether it is `active` - found as [`a2dp_in`] finds one,
+/// with a `Volume` or not, the active one first: for `crate::mic`, which
+/// waits for a new transport after the card switch, and for it to play.
+pub fn a2dp_transport_in(
+    objects: &ManagedObjects,
+    mac: Address,
+) -> Option<(OwnedObjectPath, bool)> {
+    let mut found = a2dp_transports(objects, mac);
+    found.sort_by(|a, b| (!a.active, a.path.as_str()).cmp(&(!b.active, b.path.as_str())));
+    found
+        .into_iter()
+        .next()
+        .map(|found| (found.path, found.active))
+}
+
 /// `call`, unless it takes longer than [`CALL_LIMIT`].
 async fn bounded<T>(what: &str, call: impl Future<Output = Result<T>>) -> Result<T> {
     tokio::time::timeout(CALL_LIMIT, call)
