@@ -4607,7 +4607,7 @@ async fn offered_with(
     assert!(matches!(offering.next().await, AudioRequest::Source(true)));
     assert!(matches!(
         offering.next().await,
-        AudioRequest::SetDefault(Some(name)) if name == mic::NODE_NAME
+        AudioRequest::SetDefault(name) if name == mic::NODE_NAME
     ));
     side.send(AudioEvent::Default(Some(Some(mic::NODE_NAME.into()))))
         .unwrap();
@@ -4669,7 +4669,7 @@ async fn a_recording_runs_the_microphone_around_conversation_awareness() {
     assert!(matches!(offering.next().await, AudioRequest::Source(false)));
     assert!(matches!(
         offering.next().await,
-        AudioRequest::SetDefault(Some(name)) if name == LAPTOP_MIC
+        AudioRequest::SetDefault(name) if name == LAPTOP_MIC
     ));
     assert!(matches!(offering.next().await, AudioRequest::Quit));
 }
@@ -4770,7 +4770,7 @@ async fn the_default_input_goes_back_after_pipewire_went() {
     .unwrap();
     assert!(matches!(
         offering.next().await,
-        AudioRequest::SetDefault(Some(name)) if name == LAPTOP_MIC
+        AudioRequest::SetDefault(name) if name == LAPTOP_MIC
     ));
     assert!(matches!(offering.next().await, AudioRequest::Quit));
     assert!(offering.settled().await);
@@ -4792,7 +4792,7 @@ async fn a_put_back_the_side_took_but_never_served_is_asked_again() {
     assert!(matches!(offering.next().await, AudioRequest::Source(false)));
     assert!(matches!(
         offering.next().await,
-        AudioRequest::SetDefault(Some(name)) if name == LAPTOP_MIC
+        AudioRequest::SetDefault(name) if name == LAPTOP_MIC
     ));
     side.send(AudioEvent::Gone("the connection to PipeWire ended".into()))
         .unwrap();
@@ -4803,7 +4803,7 @@ async fn a_put_back_the_side_took_but_never_served_is_asked_again() {
     .unwrap();
     assert!(matches!(
         offering.next().await,
-        AudioRequest::SetDefault(Some(name)) if name == LAPTOP_MIC
+        AudioRequest::SetDefault(name) if name == LAPTOP_MIC
     ));
     assert!(matches!(offering.next().await, AudioRequest::Quit));
     assert!(offering.settled().await);
@@ -4824,7 +4824,7 @@ async fn a_side_that_never_confirms_a_put_back_is_replaced() {
     assert!(matches!(offering.next().await, AudioRequest::Source(false)));
     assert!(matches!(
         offering.next().await,
-        AudioRequest::SetDefault(Some(name)) if name == LAPTOP_MIC
+        AudioRequest::SetDefault(name) if name == LAPTOP_MIC
     ));
     assert!(matches!(offering.next().await, AudioRequest::Quit));
 
@@ -4835,7 +4835,7 @@ async fn a_side_that_never_confirms_a_put_back_is_replaced() {
     .unwrap();
     assert!(matches!(
         offering.next().await,
-        AudioRequest::SetDefault(Some(name)) if name == LAPTOP_MIC
+        AudioRequest::SetDefault(name) if name == LAPTOP_MIC
     ));
     assert!(matches!(offering.next().await, AudioRequest::Quit));
     assert!(offering.settled().await);
@@ -4849,7 +4849,7 @@ async fn a_side_that_never_confirms_a_put_back_is_replaced() {
     assert!(matches!(offering.next().await, AudioRequest::Source(true)));
     assert!(matches!(
         offering.next().await,
-        AudioRequest::SetDefault(Some(name)) if name == mic::NODE_NAME
+        AudioRequest::SetDefault(name) if name == mic::NODE_NAME
     ));
 }
 
@@ -4880,7 +4880,7 @@ async fn the_default_input_waits_for_the_metadata() {
         .unwrap();
     assert!(matches!(
         offering.next().await,
-        AudioRequest::SetDefault(Some(name)) if name == mic::NODE_NAME
+        AudioRequest::SetDefault(name) if name == mic::NODE_NAME
     ));
     side.send(AudioEvent::Default(Some(Some(mic::NODE_NAME.into()))))
         .unwrap();
@@ -4888,7 +4888,87 @@ async fn the_default_input_waits_for_the_metadata() {
     assert!(matches!(offering.next().await, AudioRequest::Source(false)));
     assert!(matches!(
         offering.next().await,
-        AudioRequest::SetDefault(Some(name)) if name == LAPTOP_MIC
+        AudioRequest::SetDefault(name) if name == LAPTOP_MIC
+    ));
+    assert!(matches!(offering.next().await, AudioRequest::Quit));
+}
+
+/// A put back the audio side answered the sync for, and the `default`
+/// metadata gone before it was read back: once the metadata is back naming
+/// the source, the source down, the put back is asked again (#209).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_put_back_answered_but_not_read_back_is_asked_again_after_the_metadata_went() {
+    let (_fixture, mut app, mut offering, side) = offered().await;
+    app.detach(PAIR).await;
+    assert!(matches!(offering.next().await, AudioRequest::Source(false)));
+    assert!(matches!(
+        offering.next().await,
+        AudioRequest::SetDefault(name) if name == LAPTOP_MIC
+    ));
+    assert!(offering.settled().await);
+    side.send(AudioEvent::Default(None)).unwrap();
+    side.send(AudioEvent::Default(Some(Some(mic::NODE_NAME.into()))))
+        .unwrap();
+    assert!(matches!(
+        offering.next().await,
+        AudioRequest::SetDefault(name) if name == LAPTOP_MIC
+    ));
+}
+
+/// WirePlumber restarting while the source is the default input: its
+/// `default` metadata goes, comes back empty, and is then set from its state
+/// to the input before. None of that is the user's choice: with the switch
+/// off, that input is put back (#209).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wireplumber_restart_is_not_the_users_choice() {
+    let (_fixture, _app, mut offering, side) = offered().await;
+    side.send(AudioEvent::Default(None)).unwrap();
+    side.send(AudioEvent::Default(Some(None))).unwrap();
+    side.send(AudioEvent::Default(Some(Some(LAPTOP_MIC.into()))))
+        .unwrap();
+    assert!(offering.settled().await);
+    offering.switch.send_replace(false);
+    assert!(matches!(offering.next().await, AudioRequest::Source(false)));
+    assert!(matches!(
+        offering.next().await,
+        AudioRequest::SetDefault(name) if name == LAPTOP_MIC
+    ));
+    assert!(matches!(offering.next().await, AudioRequest::Quit));
+}
+
+/// WirePlumber's `default` metadata read empty as the source comes up, and
+/// then set from WirePlumber's state to the input the user had, before the
+/// source is read back: that input is the one before, and is put back with
+/// the switch off (#209).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wireplumbers_late_restore_is_the_input_before() {
+    let fixture = Fixture::new(&[(PAIR, PRO_3, PAIR_LEVELS)]).await;
+    let mut app = fixture.start_app().await;
+    app.stop_listening().await;
+    let mut offering = fixture
+        .start_offering(&app, mic::SWITCH_REPLY_LIMIT, mic::SYNC_LIMIT)
+        .await;
+    let side = offering.side().await;
+    side.send(AudioEvent::Ready {
+        default: Some(None),
+    })
+    .unwrap();
+    app.attach(PAIR).await;
+    assert!(matches!(offering.next().await, AudioRequest::Source(true)));
+    assert!(matches!(
+        offering.next().await,
+        AudioRequest::SetDefault(name) if name == mic::NODE_NAME
+    ));
+    side.send(AudioEvent::Default(Some(Some(LAPTOP_MIC.into()))))
+        .unwrap();
+    side.send(AudioEvent::Default(Some(Some(mic::NODE_NAME.into()))))
+        .unwrap();
+    assert!(offering.settled().await);
+    offering.switch.send_replace(false);
+    assert!(matches!(offering.next().await, AudioRequest::Source(false)));
+    assert!(matches!(
+        offering.next().await,
+        AudioRequest::SetDefault(name) if name == LAPTOP_MIC
     ));
     assert!(matches!(offering.next().await, AudioRequest::Quit));
 }
@@ -4973,7 +5053,7 @@ async fn a_quit_during_the_card_switch_sets_the_card_back() {
     assert!(matches!(offering.next().await, AudioRequest::SetBackCard));
     assert!(matches!(
         offering.next().await,
-        AudioRequest::SetDefault(Some(name)) if name == LAPTOP_MIC
+        AudioRequest::SetDefault(name) if name == LAPTOP_MIC
     ));
     assert!(matches!(offering.next().await, AudioRequest::Source(false)));
     timeout(TIMEOUT, quit).await.unwrap().unwrap();
@@ -5009,7 +5089,7 @@ async fn a_quit_while_the_switch_is_asked_sets_the_card_back_after() {
     assert!(matches!(offering.next().await, AudioRequest::SetBackCard));
     assert!(matches!(
         offering.next().await,
-        AudioRequest::SetDefault(Some(name)) if name == LAPTOP_MIC
+        AudioRequest::SetDefault(name) if name == LAPTOP_MIC
     ));
     assert!(matches!(offering.next().await, AudioRequest::Source(false)));
     timeout(TIMEOUT, quit).await.unwrap().unwrap();
