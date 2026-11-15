@@ -46,6 +46,7 @@ pub mod harness;
 pub mod indicator;
 pub mod keystore;
 pub mod media;
+pub mod mic;
 pub mod migrate;
 pub mod nearby;
 pub mod notify;

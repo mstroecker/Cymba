@@ -61,12 +61,24 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# The microphone over AAP (#209): its source on PipeWire, and the system
+# FFmpeg's own AAC decoder, its libavcodec loaded when the app starts - so a
+# system without it, or with another soname, still runs the app (see
+# docs/app/mic.md). Optional: the `mic` feature brings them, so a build
+# without PipeWire's headers goes on without it.
+pipewire = { version = "0.10", optional = true, features = ["v0_3_49"] }
+libloading = { version = "0.8", optional = true }
+
 # Test harness: AAP over a Unix socket, for a fake to answer (#68)
 tokio-seqpacket = { version = "0.9", optional = true }
 # Test harness: a directory for a private bus's socket (#72)
 tempfile = { version = "3", optional = true }
 
 [features]
+# The microphone over AAP (#209), on by default. Without it the Preferences
+# switch says the build has no microphone support.
+default = ["mic"]
+mic = ["dep:pipewire", "dep:libloading"]
 # Test harness hooks: a fake BlueZ, fake AirPods and UI automation (#74).
 # Debug builds only - src/lib.rs refuses a release build with it.
 harness = ["dep:tokio-seqpacket", "dep:tempfile"]

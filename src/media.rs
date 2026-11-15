@@ -444,7 +444,7 @@ pub async fn call(conn: &Connection, player: &Player, method: &str, limit: Durat
 
 /// Whether `e` is an answer - an error a player, or the bus, sent back -
 /// rather than the connection failing or taking too long.
-fn is_answer(e: &anyhow::Error) -> bool {
+pub(crate) fn is_answer(e: &anyhow::Error) -> bool {
     e.chain().any(|cause| {
         matches!(
             cause.downcast_ref::<zbus::Error>(),
@@ -455,7 +455,7 @@ fn is_answer(e: &anyhow::Error) -> bool {
 
 /// A bus [`Media`] reaches, connected when first needed, and again after the
 /// connection failed.
-struct Bus {
+pub(crate) struct Bus {
     /// What is on it, for the logs: `BlueZ`, `the media players`.
     what: &'static str,
     connect: Connect,
@@ -463,7 +463,7 @@ struct Bus {
 }
 
 impl Bus {
-    fn new(what: &'static str, connect: Connect) -> Self {
+    pub(crate) fn new(what: &'static str, connect: Connect) -> Self {
         Self {
             what,
             connect,
@@ -472,7 +472,7 @@ impl Bus {
     }
 
     /// The connection, made if there is none, within `limit`.
-    async fn connection(&mut self, limit: Duration) -> Result<Connection> {
+    pub(crate) async fn connection(&mut self, limit: Duration) -> Result<Connection> {
         if let Some(conn) = &self.conn {
             return Ok(conn.clone());
         }
@@ -489,7 +489,7 @@ impl Bus {
 
     /// Drops the connection after a failure that was no answer: it is made
     /// again next time.
-    fn check<T>(&mut self, result: &Result<T>) {
+    pub(crate) fn check<T>(&mut self, result: &Result<T>) {
         if let Err(e) = result
             && !is_answer(e)
         {

@@ -25,7 +25,9 @@ allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
+    "BSD-3-Clause",
     "GPL-3.0-or-later",
+    "ISC",
     "MIT",
     "MPL-2.0",
     "Unicode-3.0",
@@ -40,6 +42,8 @@ wildcards = "deny"
 skip = [
     { crate = "syn@2", reason = "enumflags2_derive, num-derive, strum_macros and tracing-attributes are still on syn 2" },
     { crate = "system-deps@7", reason = "libadwaita-sys is still on system-deps 7; the other GTK -sys crates use 9" },
+    { crate = "nom@7", reason = "cexpr, under bindgen, is still on nom 7; libspa uses 8" },
+    { crate = "shlex@1", reason = "bindgen, under the PipeWire -sys crates, is still on shlex 1; cc uses 2" },
 ]
 
 [sources]
