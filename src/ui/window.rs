@@ -484,6 +484,11 @@ fn command_failed(command: &Command, error: &anyhow::Error) -> String {
         // The name is in the dialog the user just typed it in.
         Command::Rename(_) if lost => "Lost the connection while renaming the AirPods".into(),
         Command::Rename(_) => "Couldn’t rename the AirPods".into(),
+        // Sent by the microphone's task alone, which logs a failure.
+        Command::Microphone(_) if lost => {
+            "Lost the connection while switching the microphone".into()
+        }
+        Command::Microphone(_) => "Couldn’t switch the microphone".into(),
     }
 }
 

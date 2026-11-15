@@ -36,7 +36,7 @@ use tokio::time::Instant;
 use tokio_seqpacket::UnixSeqpacket;
 use tracing::Instrument;
 
-use crate::aap::{battery, conversation, keys, name, noise};
+use crate::aap::{battery, conversation, keys, mic, name, noise};
 
 /// L2CAP Protocol/Service Multiplexer for AAP.
 pub(crate) const AAP_PSM: u16 = 0x1001; // 4097
@@ -398,6 +398,17 @@ impl Client {
     pub async fn set_conversation_awareness(&self, enabled: bool) -> Result<()> {
         self.send_packet(&conversation::set_packet(enabled), "Conversation Awareness")
             .await
+    }
+
+    /// Starts the microphone's stream, or stops it, with LibrePods' packets,
+    /// which a Pro 3 answered (`docs/protocol/aap/microphone.md`). The
+    /// answer comes on the link like any packet.
+    pub async fn set_microphone(&self, on: bool) -> Result<()> {
+        if on {
+            self.send_packet(&mic::START, "microphone start").await
+        } else {
+            self.send_packet(&mic::STOP, "microphone stop").await
+        }
     }
 
     /// Renames the pods: the name they give every host, not BlueZ's alias.
