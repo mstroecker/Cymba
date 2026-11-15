@@ -348,7 +348,8 @@ notification was Conversation Awareness's speech level `09` (#150).
   leaves it to the next, and one that does not answer within `mic::SYNC_LIMIT` is taken to hang:
   asked to quit, no longer heard, and replaced. Its quit sets back a card switch under way and
   starts no other. Started again on `bluez::Backoff`, the waits from the shortest again only
-  after a run of `bluez::RETRY_MAX`, never at `Ready`; with the switch off, the row stays usable.
+  after a run of `bluez::RETRY_MAX` or with the switch off and nothing to put back, never at
+  `Ready`; with the switch off, the row stays usable.
   [Why](docs/app/mic.md#the-pipewire-side)
 - FFmpeg's own `aac` decoder from the system's libavcodec, loaded at runtime, never linked, never
   `libfdk_aac`: a soname from `decoder::NEWEST_MAJOR` down to `decoder::OLDEST_MAJOR`, its version

@@ -129,6 +129,9 @@ microphone" takes it, as a phone call would on the pods. The default input is Pi
     ([The PipeWire side](#the-pipewire-side)), or the metadata gone - is asked again, of
     the next thread, once the default input reads the source with the source down. Read
     back as put back, by the next thread too, it is done, and not the user's choice.
+    One that then reads none, and stays none - the session manager gone for good, or set
+    not to restore its defaults - is never asked again, and PipeWire's thread stays
+    with the switch off, idle, until the app quits.
   - **Another input read** is the user's choice, and ends it.
 
 ## The card switch

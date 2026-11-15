@@ -410,9 +410,10 @@ impl DefaultInput {
     ///
     /// - Not read - `current` `None`, PipeWire having no `default` metadata
     ///   - says nothing: nothing is asked or changed until it reads.
-    /// - Read as none - the metadata made anew, which WirePlumber fills
-    ///   after - is nobody's choice, and ends nothing: until the source
-    ///   reads again, what reads after is the one before.
+    /// - Read as none - the metadata made anew, filled after
+    ///   (`docs/protocol/linux/desktop.md#pipewire`) - is nobody's choice,
+    ///   and ends nothing: until the source reads again, what reads after
+    ///   is the one before.
     /// - A put back read back is done; another input read meanwhile is
     ///   the user's, and ends it too.
     /// - Up, and not made yet: make it the source, remembering `current` -
@@ -422,8 +423,8 @@ impl DefaultInput {
     ///   put back, and the source is not made the default input again
     ///   while it stays up.
     /// - Down, made: put back what was before - with none before, nothing,
-    ///   as a key cleared empties WirePlumber's history. Down with a put
-    ///   back lost, the source read: ask it again.
+    ///   as the key is never cleared ([`AudioRequest::SetDefault`]). Down
+    ///   with a put back lost, the source read: ask it again.
     pub fn update(&mut self, up: bool, current: Option<Option<&str>>) -> Option<DefaultChange> {
         let current = current?;
         // An input other than the source.
@@ -504,8 +505,7 @@ impl DefaultInput {
     }
 
     /// The last put back may not have reached PipeWire: it is asked again
-    /// at the next update with the source down, if the default input still
-    /// reads the source then.
+    /// once an update with the source down reads the source.
     pub fn not_put_back(&mut self) {
         if let Some(asked) = &mut self.asked {
             asked.lost = true;
