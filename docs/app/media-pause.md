@@ -97,6 +97,11 @@ a call is on. The transport is found as there - under the pair's device, by `Dev
 `UUID` - with `volume::a2dp_active_in`, which takes it whether it has a `Volume` or not:
 pausing sets no volume.
 
+**Not a call over the microphone over AAP.** With that switch on, a call app records from
+the microphone's source while A2DP stays `active` ([mic.md](mic.md)): a pod leaving an
+ear during such a call pauses every `Playing` player, as with no call. Not run on a pair
+([mic.md](mic.md#hardware-checks)).
+
 ## The task
 
 - **Players** are the names starting `org.mpris.MediaPlayer2.` (`ListNames`), each called at

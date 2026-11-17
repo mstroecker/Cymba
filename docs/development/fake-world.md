@@ -55,7 +55,7 @@ The pipeline tests drive the same world from the test process.
 | A2DP transport paths | `<device>/sep1/fd<n>`, `n` new to the device with every transport | `n` the first free from the count of all bluetoothd's transports (BlueZ 5.87, `profiles/audio/transport.c`). Nothing depends on the number. |
 | A2DP `Volume` set | Every set that succeeds brings a `PropertiesChanged` as it returns, with the volume the transport holds by then ([protocol/linux/zbus.md](../protocol/linux/zbus.md#property-setters)): one held already, or one not answered yet, brings one that changes nothing. Nothing in the app watches the transport's signals: it reads `Volume` afresh. | A set of the volume held does nothing, and any other changes `Volume` only once the pods answer: [protocol/linux/bluez.md](../protocol/linux/bluez.md#mediatransport1volume) |
 | logind | None on the fake world's system bus: the app counts the user as at the desktop ([app/nearby.md](../app/nearby.md#at-the-desktop)), so a nearby notification is never held, and the machine never resumes | logind's session, its hints set by the desktop: [protocol/linux/desktop.md](../protocol/linux/desktop.md#logind) |
-| Audio server | None: the world's methods do what PipeWire, or the user, would | PipeWire sets A2DP up |
+| Audio server | None: the world's methods do what PipeWire, or the user, would. The app is pointed at a socket path in an empty directory for PipeWire, so the microphone's switch finds none ([The microphone](#the-microphone)) | PipeWire sets A2DP up, and serves the microphone's source |
 | `Device1.Connect` | Answered success once the connect is under way, before `Connected=true` - or, with `SetPageDelay`, that long after the call, the pair connecting then; refused at once when the pair does not answer the page, which in the fake world is both pods in the closed case alone | Answered once the page and the profiles are done or have failed ([protocol/linux/bluez.md](../protocol/linux/bluez.md#device1connect)), read in BlueZ's source, its reply after `Connected` seen on a Pro 3 ([Runs](../protocol/linux/bluez.md#runs)); a real page timeout takes longer; how long is open: [Open questions](../protocol/linux/bluez.md#open-questions). bluetoothd left a `Connect` to pods in the closed case unanswered for 30 s, until `bluez::DEVICE_CONNECT_LIMIT` ended the call ([Runs](../protocol/linux/bluez.md#runs)); what bluetoothd replies in the end is open. Whether the pods out of range answer a page, or held by another kind of host than an iPhone, is open: [Open questions](../protocol/linux/bluez.md#open-questions). The fake's closed-case refusal at once is its guess. |
 
 The defaults are a Pro 3's. `SetQuirk` switches the fake pods to AirPods 4's answers to a
@@ -140,6 +140,27 @@ The fake pods take a rename at once and answer nothing, as a Pro 3 did (#160). A
 over `NAME_KEPT` bytes is cut to its first 127, inside a character if one falls there, as
 a Pro 3 cut it. The next connection's `0x1D` carries the name, and the fake BlueZ's
 `Name` once the pair connects again. `Name` of `FakeWorld1` reads it back.
+
+### The microphone
+
+What the hardware sends: [protocol/aap/microphone.md](../protocol/aap/microphone.md).
+
+The fake pods answer the start `MIC_ANSWER` after it and send an audio packet every
+`MIC_AUDIO_EVERY` from `MIC_FIRST_AUDIO` on, each of four access units whose timestamps
+go up by 180 from 900, as runs 1, 3 and 4 began; the stop they answer `MIC_STOP_ANSWER`
+after it, and send no audio after it, where the hardware sent one or two packets more.
+The frames are made up: no decoder makes anything of them. The `0x0E` of type `22` and
+the `0x55` around the start and stop are not sent, and A2DP is not touched: the second
+pod going silent after a stop, which the app switches the card for, has no fake.
+`Pods::mic_running` says whether the stream runs.
+
+The fake world reaches no PipeWire: `scripts/fake-world.sh` sets `PIPEWIRE_REMOTE` to a
+socket path in an empty directory, which libpipewire tries alone
+([protocol/linux/desktop.md](../protocol/linux/desktop.md#pipewire)), so the
+microphone's switch, turned on, says PipeWire cannot be reached, and never touches the
+user's PipeWire or default input. The pipeline tests hand the app
+a fake audio side in PipeWire's place; the PipeWire side itself runs against a daemon of
+a test's own ([app/mic.md](../app/mic.md)).
 
 ### Advertisements
 

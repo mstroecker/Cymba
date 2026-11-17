@@ -1,17 +1,21 @@
 # The desktop
 
 What the desktop around BlueZ does that a client has to know: PipeWire following the
-transport's volume, MPRIS, the path a press on a pod takes to a player, and UPower's
+transport's volume, an input offered on PipeWire, its default input and a Bluetooth
+card's profile, MPRIS, the path a press on a pod takes to a player, and UPower's
 warning level for a Bluetooth battery, how GApplication keeps an app to one instance,
 and how it serves its actions on the bus, where GLib sends a notification and what GNOME
 Shell does with its button, what logind and GNOME say of whether the user is at the desktop, and what
 Flatpak's bus proxy lets through. Checked on hardware where a run below says so; MPRIS
 is from its specification, UPower also from its source, GLib, GNOME Shell,
 gnome-session, logind, Flatpak and the bus proxy from their documentation and source, and the
-key path is only as understood, not traced.
+key path is only as understood, not traced. PipeWire's input and default input ran
+against a PipeWire daemon of a test's own; the order of a client's requests is from
+PipeWire's headers; what WirePlumber does with the default input, and how inputs are
+named, is from WirePlumber's, PipeWire's and udev's source, not run.
 
-The app acts on these in `volume`, `media`, `notify`, `nearby`, `presence` and
-`ui::connect`: [app/volume.md](../../app/volume.md),
+The app acts on these in `volume`, `media`, `mic`, `notify`, `nearby`, `presence` and
+`ui::connect`: [app/volume.md](../../app/volume.md), [app/mic.md](../../app/mic.md),
 [app/media-pause.md](../../app/media-pause.md),
 [app/notifications.md](../../app/notifications.md),
 [app/nearby.md](../../app/nearby.md). On GApplication's, at its startup:
@@ -38,6 +42,91 @@ Media players are controlled over MPRIS, on the session bus
 - **`Pause` and `Play`** each go one way only: `Pause` on a paused player and `Play` on
   a playing one change nothing.
 - **`PlayPause` is a toggle**: sent to a player that is not playing, it starts it.
+
+## PipeWire
+
+What a client of PipeWire meets when it offers an input and changes the default one. From
+PipeWire 1.6.10 against a daemon of a test's own, with no session manager, on
+2026-11-15 (#209; run below), unless an item says otherwise.
+
+- **A client's stream with `media.class` `Audio/Source` is an input apps record from.**
+  Its state is `Paused` while nothing records from it, and `Streaming` while a recorder
+  linked to it runs; back to `Paused` once the recorder goes.
+- **The stream's format is converted for each app.** A stream offers its own format;
+  PipeWire's adapter converts to the graph's and the recorder's, once the stream's ports
+  are set up. With no session manager, a stream has no ports until a `PortConfig` param
+  sets them, as WirePlumber does: the run set `dsp` mode with a format by hand.
+- **The default input is the `default` metadata's `default.configured.audio.source`,** on
+  subject 0, of type `Spa:String:JSON`, its value `{ "name": "<node.name>" }`. Set or
+  cleared by a client, it was told back to that client (run below). GNOME's
+  Sound panel and `pactl set-default-source` set this key, which WirePlumber keeps and
+  follows when picking the input it uses (WirePlumber's documentation; not run here).
+- **With WirePlumber, the `default` metadata is WirePlumber's own,** kept in its process
+  and exported to the server, which hands every client's change on to it (WirePlumber
+  0.5.18, `src/scripts/metadata.lua` and `lib/wp/metadata.c`, `pw_core_export`;
+  PipeWire 1.6.0, `src/modules/module-metadata/metadata.c`, `metadata_set_property`).
+  So the metadata is there only while WirePlumber is: a client that connects before
+  WirePlumber has made it finds none, and it goes with WirePlumber. An exported metadata
+  that came after a client connected, from another client, was there for that client
+  to bind and change, its changes told back, and it went with the client that exported
+  it (run below).
+- **WirePlumber makes the metadata empty, and sets the keys after.** Each
+  `default.configured.*` key it has a value for in its state file is set from a hook on
+  its own `metadata-added` event, which comes as its object manager takes the metadata in
+  (WirePlumber 0.5.18, `src/scripts/default-nodes/state-default-nodes.lua`,
+  `metadata_added_hook`; `modules/module-standard-event-source.c`, `on_object_added`). So
+  a client that binds the metadata as it is announced, at WirePlumber's start or
+  restart, can read the default input as none first, and the value from the state file
+  after.
+- **WirePlumber keeps every input set as the default as a history,** newest first, in its
+  state file: a value set goes to the top, or moves there. **A key cleared empties that
+  history** (WirePlumber 0.5.18, `state-default-nodes.lua`,
+  `store_configured_default_nodes_hook` and `updateStored`).
+- **WirePlumber's input is the configured one where a node has that name;** else the
+  newest one in the history that has a node; else its own pick by priority (WirePlumber
+  0.5.18, `src/scripts/default-nodes/find-selected-default-node.lua`,
+  `state-default-nodes.lua`'s `find_stored_default_node_hook`, and
+  `find-best-default-node.lua`). A key naming a node that is not there is passed over,
+  as an unset one is.
+- **An input's node name can carry a USB device's serial number or a Bluetooth
+  device's address.** WirePlumber names an ALSA input
+  `alsa_input.<device name>.<profile>`, its device name udev's `ACP_NAME` where the card
+  has one, else udev's `ID_ID`: for a USB device its bus, `ID_SERIAL` and interface
+  number, `ID_SERIAL` being its vendor, model and serial number. A Bluetooth input is
+  `bluez_input.<address>.<id>`, the address's colons made underscores (WirePlumber
+  0.5.18, `src/scripts/monitors/alsa.lua`, `prepareDevice`, and
+  `src/scripts/lib/monitor-utils.lua`, `get_bluez_node_name`; PipeWire 1.6.10,
+  `spa/plugins/alsa/alsa-udev.c`, `device.bus-id` from `ID_ID`; systemd 262,
+  `rules.d/78-sound-card.rules` and `src/udev/udev-builtin-usb_id.c`).
+- **Two nodes may have one `node.name`:** two clients' streams given the same name were
+  both listed with it (run below).
+- **A Bluetooth device's card is a `bluez5` device object** with `api.bluez5.address`
+  its address, its profiles its `EnumProfile` params and its profile now its `Profile`
+  param, each with an index and a name; one is named `off`. Setting `Profile` to an
+  index switches the card, as `pactl set-card-profile` does (PipeWire 1.6.10,
+  `spa/plugins/bluez5/bluez5-device.c`, and the `pactl` switch of
+  [aap/microphone.md](../aap/microphone.md#a2dp); the param itself not run on a pair here).
+- **`PIPEWIRE_REMOTE` wins over a client's `remote.name`:** set and not empty, it is the
+  remote; the property is read only without it (PipeWire 1.6.10,
+  `src/modules/module-protocol-native/local-socket.c`, `get_remote`).
+- **A remote that is a path is tried alone;** a name is looked for in the runtime
+  directory - `PIPEWIRE_RUNTIME_DIR`, else `XDG_RUNTIME_DIR` - and then in
+  `/run/pipewire` (PipeWire 1.6.10, `local-socket.c`, `try_connect_name`; 1.0.5 did the
+  same, run below).
+- **A client's requests are handled in order, and a core sync answers after them:** the
+  server handles a client's methods in the order sent and delivers events in order, so
+  the `done` a `sync` asks for comes after every method sent before it, and the events
+  those caused (PipeWire 1.6.10, `pipewire/core.h`, `pw_core_methods.sync`). It says the
+  server has them, not that a session manager has acted on them. In the run the
+  `default` metadata was the daemon's own, made by its metadata module. With WirePlumber
+  the server hands a change on to WirePlumber's process, and the change is told from
+  there (above): whether before or after that `done` is open
+  ([Open questions](#open-questions)).
+- **A `pw::channel` send succeeds after its receiver is gone:** the queue is shared by
+  sender and receiver and lives while a sender does; only a poisoned lock or a failed
+  pipe write fails it. **Its receiver serves the queue under the lock a send takes:** the
+  callback runs for every message queued with the channel's mutex held, so a send waits
+  for all of them (pipewire-rs 0.10.1, `src/channel.rs`).
 
 ## A press on a pod
 
@@ -214,6 +303,28 @@ well-known name (`xdg-dbus-proxy(1)`, 0.1.9, unless another source is named):
 
 ## Runs
 
+**PipeWire: a daemon of a test's own, 2026-11-15 (#209).** `pipewire` 1.6.10 with the
+native protocol, access, metadata, client-node, adapter and link-factory modules, a
+`default` metadata and a dummy driver, its socket in a temporary directory, no session
+manager, and a client that offered an `Audio/Source` stream and set the default input. A
+`pw-record` was given ports with `pw-cli set-param <id> PortConfig '{ direction: Input,
+mode: dsp, format: { ... } }'`, the source likewise, and linked with `pw-link`; the
+source's stream went `Paused` to `Streaming`, and back once `pw-record` was killed. The
+default input set and cleared on the metadata came back to the client each time. A
+second daemon, with no `default` metadata of its own, met a client that connected first;
+another client then made a metadata named `default` and exported it, as WirePlumber
+does (`pw_context_create_metadata`, `pw_core_export`). The first client bound it, set
+the default input on it and had that told back, and saw it removed once the exporting
+client disconnected. Two `pw-record`s given one `node.name` were both listed with it by
+`pw-cli ls Node`.
+
+**PipeWire 1.0.5: Ubuntu 24.04 in a container, 2026-11-15 (#209).** The same daemon, with
+`pw-cat --playback` offering the `Audio/Source` stream in place of the app: both nodes
+given ports with `PortConfig` as above, `pw-link` linked them by port name, and every node
+went `running`. A client with an empty runtime directory reached a daemon at
+`/run/pipewire/pipewire-0` by the relative remote name `pipewire-0`, from `-r` or
+`PIPEWIRE_REMOTE`, but not by an absolute `PIPEWIRE_REMOTE` in that empty directory.
+
 **The volume: Pro 3, 2026-11-01 (#150).** The transport's `Volume` was set from 32 to 20
 and back with `busctl`, which was not the transport's owner. PipeWire's sink followed
 within 0.5 s: 25% to 16% to 25%.
@@ -223,6 +334,16 @@ bluetoothd at 9%, then 4%. UPower 1.91.5 listed it as headphones at that level, 
 state unknown and `WarningLevel` none, and `gsd-power` sent nothing.
 
 ## Open questions
+
+- Two nodes of one `node.name` ([PipeWire](#pipewire)): which of them a default input
+  naming it picks. WirePlumber picks the default input by name (WirePlumber 0.5.18,
+  `find-selected-default-node.lua`, `apply-default-node.lua`); which of two nodes of that
+  name an app recording from it gets is decided where the name is resolved
+  (`default-nodes-api`, `get-default-node`), which has not been read or run.
+- With WirePlumber, whether a change to the `default` metadata's
+  `default.configured.audio.source`, set just before a core `sync`, is told back to the
+  client before that sync's `done` or after it ([PipeWire](#pipewire)). Not run here:
+  [the run](#runs) had no session manager.
 
 - In the Flatpak, logind sees `xdg-dbus-proxy` as the caller of `session/auto`: whether it
   still resolves to the user's graphical session (#196).

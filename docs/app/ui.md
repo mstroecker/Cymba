@@ -10,9 +10,10 @@ document; this one covers what holds for all of them.
 scanning hint from the scanner's ([The scanning hint](#the-scanning-hint)), and the
 connect banner's title and button and the header's spinner from the connects under way
 ([The connect banner](#the-connect-banner)), which redraw at once through
-`Connecting::follow`, with no render loop of their own. The
+`Connecting::follow`, with no render loop of their own, and the microphone's row from
+whether it can be offered (`mic::MicControl::availability`, [Settings](#settings)). The
 window's render loops, one per stream, run on the main context, the only place a widget
-may be touched ([architecture.md](architecture.md#two-threads)). Each:
+may be touched ([architecture.md](architecture.md#the-threads)). Each:
 
 - **One pass per `RENDER_INTERVAL` at most.** tokio's cooperative budget does not reach
   glib's executor: under a stream of updates `changed()` would stay ready, and the loop
@@ -201,8 +202,16 @@ action's state:
 | Battery notifications | `app.battery-notifications` | `Settings::battery_notifications` | [notifications.md](notifications.md#the-switch) |
 | Nearby notifications | `app.nearby-notifications` | `Settings::nearby_notifications` | [nearby.md](nearby.md#the-switch) |
 | Pause when a pod is taken out | `app.pause-on-ear` | `Settings::pause_on_ear` | [media-pause.md](media-pause.md) |
+| AirPods microphone | `app.mic-over-aap` | `Settings::mic_over_aap` | [mic.md](mic.md#the-switch) |
 
-Each is on by default, also for a file from before the setting.
+Each is on by default, also for a file from before the setting - but the microphone's,
+which is experimental and off unless turned on.
+
+**The microphone's row says why it is not offered,** while it is not: the build has no
+`mic` feature, no decoder loads, or, while the switch is on, PipeWire cannot be reached
+(`mic::Availability`, a `watch` the row follows on the main context). It is insensitive
+then while the switch is off; one that is on can always be turned off. Turned off, it no
+longer says PipeWire cannot be reached, so the next try is open.
 
 **Kept in `~/.config/cymba/settings.json`,** a file rather than GSettings: a GSettings
 schema has to be compiled and installed wherever the app runs, and GIO aborts the process

@@ -69,6 +69,7 @@ own. This is the only channel that can *send* commands.
 | Conversation Awareness | ✅ |
 | Device rename - the pods' own name, which they report to a host as it connects | 🚧 |
 | Firmware version, as the iPhone shows it | 🚧 |
+| Microphone, as an input on PipeWire, with the music staying in stereo - experimental, off by default | 🚧 |
 | Press-and-hold gesture configuration | 📋 |
 | Personalized and adaptive volume | 📋 |
 | Loud sound reduction | 📋 |
@@ -95,6 +96,18 @@ such as `9A348`. The version reads "Unknown" until the pair has connected since 
 started. It stays on show after the pair disconnects, until the app quits. How the
 version is packed was read off one firmware (2026-11-02), to be confirmed at the next
 update, and the row is still to be checked on a pair (#161). See [`docs/app/firmware.md`](docs/app/firmware.md).
+
+The AirPods' microphone, with a switch in Preferences: off by default, as it is
+experimental. On, and with a pair connected, an "AirPods Microphone" input appears and is
+made the default; the one you had comes back once the pair disconnects, unless you chose
+another meanwhile. The microphone runs only while an app records, and the music plays on
+in stereo, where a Bluetooth headset profile would drop it to mono. Conversation
+Awareness is turned off while you record, and on again after. After each recording the app
+switches the AirPods' audio off and back, as one pod went silent after a recording
+otherwise: the music pauses for a moment and plays again once the AirPods' audio is back;
+if it does not come back, the music stays paused rather than play from the laptop. It
+needs PipeWire and FFmpeg's libavcodec on the system. Not yet tried on a pair (#209); see
+[`docs/app/mic.md`](docs/app/mic.md).
 
 ### Linux integration
 
@@ -172,18 +185,23 @@ What is actually unclear in each case:
 
 ## Requirements
 
-GTK4, libadwaita, BlueZ, and Rust 1.92 or newer (edition 2024) to build.
+GTK4, libadwaita, BlueZ, PipeWire, and Rust 1.92 or newer (edition 2024) and libclang
+to build. The microphone also needs FFmpeg's libavcodec at runtime; without it, the rest
+of the app runs and Preferences says the microphone is not available.
 
 ```bash
 # Arch Linux
-sudo pacman -S gtk4 libadwaita bluez rust
+sudo pacman -S gtk4 libadwaita bluez pipewire clang rust ffmpeg
 
 # Ubuntu / Debian
-sudo apt install libgtk-4-dev libadwaita-1-dev bluez cargo
+sudo apt install libgtk-4-dev libadwaita-1-dev bluez libpipewire-0.3-dev libclang-dev cargo ffmpeg
 
 # NixOS
-nix-shell -p gtk4 libadwaita bluez cargo
+nix-shell -p gtk4 libadwaita bluez pipewire llvmPackages.libclang cargo ffmpeg
 ```
+
+`cargo build --no-default-features` builds without the microphone, and needs neither
+PipeWire's headers nor libclang.
 
 ## Building
 

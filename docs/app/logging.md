@@ -19,12 +19,23 @@ No log, probe or example prints key bytes or serial numbers.
 
 Any packet with either opcode is cut short, whether it parses or not.
 
+- **No PipeWire node's name but the microphone's source's own:** an input's node name can
+  carry a USB device's serial number or a Bluetooth device's address
+  ([protocol/linux/desktop.md](../protocol/linux/desktop.md#pipewire)). The default input
+  remembered and put back is logged as "the input before"
+  ([mic.md](mic.md#the-default-input)), and a Bluetooth card PipeWire has is not named in
+  a log by its address unless it is the pair's.
+
 ## AAP packets
 
 - `AAP packet (N bytes):` at `debug` shows a packet's first 8 bytes, redacted: of a key
   packet, its 7-byte preamble alone.
 - `AAP packet (N bytes), whole:` at `trace` shows the whole packet, redacted, for what
   lies past those 8 bytes: `0x08`'s last two took a local build to see (#142).
+- **Neither for the microphone's audio,** some 33 packets a second while it runs, and what
+  the user says: the read loop hands an audio packet on before anything is logged
+  ([mic.md](mic.md#the-audio)). The stop logs how many were dropped, and the end of a
+  recording how many frames did not decode.
 
 ## BLE advertisements
 

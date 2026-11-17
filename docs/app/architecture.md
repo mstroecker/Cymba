@@ -1,11 +1,12 @@
 # Architecture
 
-How Cymba is put together: its two threads, the channels between them, the tasks
+How Cymba is put together: its threads - GTK's, tokio's and, for the microphone,
+PipeWire's - the channels between them, the tasks
 `main.rs` starts, and the coordinator they all meet at. A map: each part has a document
 of its own, linked below. The source tree, file by file, is in
 [AGENTS.md](../../AGENTS.md#architecture).
 
-## Two threads
+## The threads
 
 GTK owns the main thread. A tokio runtime beside it carries BLE, AAP and every D-Bus
 call. GTK types are `!Send`, so no widget can travel to a tokio task, and none may be
@@ -13,6 +14,11 @@ touched from one: the two sides meet over channels only.
 
 What comes to the main thread is consumed there with `glib::spawn_future_local`. What
 goes the other way is spawned on the runtime.
+
+**A third thread,** PipeWire's, runs while the microphone's switch is on, and until the
+default input is put back after: its loop blocks, and its objects never leave the thread
+that made them. `mic::Mic` starts it, and meets it over a queue of its own, woken by a pipe, and a
+channel back ([mic.md](mic.md#the-pipewire-side)).
 
 ## The channels
 
@@ -24,9 +30,15 @@ goes the other way is spawned on the runtime.
 | Nearby notices | `nearby::run` | the main context, which sends them: [nearby.md](nearby.md) | `async-channel` |
 | Whether the user is at the desktop, and the resumes from sleep, counted, with when the last sleep began: one value | `presence::run` | `nearby::run` | `watch`: [nearby.md](nearby.md#at-the-desktop) |
 | A quit asked for by SIGTERM or SIGINT | `quit_on_signals` | the main context, which quits as the menu does | `async-channel` |
-| Commands to the AirPods | the window, the tray | the pair's link | its queue (`Coordinator::command`), the result back on a `oneshot`: [commands.md](commands.md) |
+| Commands to the AirPods | the window, the tray, `mic::Mic` | the pair's link | its queue (`Coordinator::command`), the result back on a `oneshot`: [commands.md](commands.md) |
 | A connect asked for | `app.connect`, on the main context | BlueZ, from a task on the runtime | the result back on a `oneshot`, awaited on the main context: [bluez.md](bluez.md#connecting-a-pair) |
 | The Preferences switch for pausing on the ears | the main context | `media::Media` | `watch`: [media-pause.md](media-pause.md) |
+| The Preferences switch for the microphone | the main context | `mic::Mic` | `watch`: [mic.md](mic.md#the-switch) |
+| Whether the microphone can be offered | `mic::Mic` | the microphone's Preferences row, on the main context | `watch` (`mic::MicControl::availability`): [ui.md](ui.md#settings) |
+| The microphone's links and answers | the coordinator | `mic::Mic` | events (`Coordinator::mic_events`): [state.md](state.md#events) |
+| The microphone's audio | the read loop | `mic::Mic`, which hands it to PipeWire's thread | a bounded `mpsc` (`Coordinator::mic_audio`), dropped when full: [mic.md](mic.md#the-audio) |
+| What the microphone asks of PipeWire | `mic::Mic` | PipeWire's thread | a queue of its own, woken by a pipe (`mic::AudioRequest`): [mic.md](mic.md#replies-from-the-thread) |
+| What PipeWire tells the microphone | PipeWire's thread | `mic::Mic` | `mpsc` (`mic::AudioEvent`) |
 | Speech levels | the coordinator | `volume::Volume` | events (`Coordinator::speech_events`): [state.md](state.md#events) |
 | Each pod's place | the coordinator | `media::Media` | events (`Coordinator::ear_events`): [state.md](state.md#events) |
 | How the adapters listen | the scanner | the Preferences scanning hint, on the main context | `watch` (`ble::scanner::ScanControl::state`, the `ScanControl` made in `Primary::start`): [ui.md](ui.md#the-scanning-hint) |
@@ -43,6 +55,7 @@ goes the other way is spawned on the runtime.
 | `expiry_task` | Each minute, prunes the BLE cache and saves the readings when due | [state.md](state.md#the-ble-cache), [readings.md](readings.md) |
 | `volume::Volume::run` | Lowers the pair's volume while the user speaks | [volume.md](volume.md) |
 | `media::Media::run` | Pauses the media when a pod leaves an ear | [media-pause.md](media-pause.md) |
+| `mic::Mic::run` | Offers the microphone over AAP as an input while its switch is on; starts PipeWire's thread, and the card switch after each stop in a task of its own | [mic.md](mic.md) |
 | `notify::run` | Works out the low battery notices | [notifications.md](notifications.md) |
 | `presence::run` | Follows logind's session - whether the user is at the desktop - and takes resumes from sleep in, also with no session found | [nearby.md](nearby.md#at-the-desktop) |
 | `nearby::run` | Works out the nearby notices | [nearby.md](nearby.md) |
@@ -54,8 +67,9 @@ SIGINT into a quit, as the menu's.
 The window's render loops run on the main context: [ui.md](ui.md#updates-come-from-snapshots).
 
 At the quit, `main.rs` puts back a lowered volume, for `volume::RESTORE_LIMIT` at most
-([volume.md](volume.md)), and saves the readings once more, without a bound
-([readings.md](readings.md)). Both run before the runtime is dropped. A second SIGTERM or
+([volume.md](volume.md)), stops the microphone's stream, sets back a card switch under way and puts the default input back,
+for `mic::QUIT_LIMIT` at most ([mic.md](mic.md)), and saves the readings once more,
+without a bound ([readings.md](readings.md)). All three run before the runtime is dropped. A second SIGTERM or
 SIGINT exits at once.
 
 ## The coordinator
@@ -74,7 +88,9 @@ Coordinator (state per pair, keyed by real MAC)
     ├─ BLE scanner ────────> identified advertisements from every pair in range
     ├─ Per-pair choice ────> a link's reading supersedes BLE for its own pair only
     ├─ Snapshots (watch) ──> window, tray, attachment (GNOME Settings), notifiers
-    └─ Events ─────────────> speech levels to the volume, places to the media pause
+    ├─ Events ─────────────> speech levels to the volume, places to the media pause,
+    │                           links and answers to the microphone
+    └─ Audio (bounded) ────> the microphone's packets, to its source on PipeWire
 ```
 
 State is keyed by the pair's real MAC, which is what lets a pod's rotating address
@@ -98,6 +114,7 @@ collapse onto one pair: [identification.md](identification.md). How the merge wo
 | Conversation Awareness | [conversation-awareness.md](conversation-awareness.md) |
 | The volume lowered while the user speaks | [volume.md](volume.md) |
 | The media paused when a pod leaves an ear | [media-pause.md](media-pause.md) |
+| The microphone over AAP | [mic.md](mic.md) |
 | Names and rename | [names.md](names.md) |
 | Firmware | [firmware.md](firmware.md) |
 | Low battery notifications | [notifications.md](notifications.md) |

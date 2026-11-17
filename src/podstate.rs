@@ -130,6 +130,10 @@ pub enum Command {
     /// which nothing here touches - and records the name. Refused before it
     /// is queued when [`aap::name::check`] refuses the name.
     Rename(String),
+    /// Starts the microphone's stream over AAP, or stops it - see
+    /// `crate::mic`. Nothing is recorded: the pods' answer comes as a
+    /// [`MicEvent::Answer`].
+    Microphone(bool),
 }
 
 impl std::fmt::Display for Command {
@@ -142,6 +146,11 @@ impl std::fmt::Display for Command {
                 if *enabled { "on" } else { "off" }
             ),
             Self::Rename(name) => write!(f, "rename to {name:?}"),
+            Self::Microphone(on) => write!(
+                f,
+                "{} of the microphone",
+                if *on { "start" } else { "stop" }
+            ),
         }
     }
 }
@@ -202,6 +211,33 @@ pub enum EarEvent {
     /// The pair's link went: closed here, or lost. Its places stand for
     /// nothing any more.
     LinkGone { mac: Address },
+}
+
+/// A link coming up or going, or the pods' answer to the microphone's start
+/// or stop on it, as [`Coordinator::mic_events`] tells them, for what offers
+/// the microphone over AAP - see `crate::mic`.
+///
+/// Events, as for [`SpeechEvent`]: a link that went and came back between
+/// two snapshots ended a stream, which the new link does not carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MicEvent {
+    /// The pair has a link: no stream runs on it.
+    LinkUp { mac: Address },
+    /// The pods answered a start or a stop on the pair's link.
+    Answer {
+        mac: Address,
+        answer: aap::mic::Answer,
+    },
+    /// The pair's link went: closed here, or lost. A stream on it is over.
+    LinkGone { mac: Address },
+}
+
+/// An audio packet from a pair's microphone, whole, as
+/// [`Coordinator::mic_audio`] hands it on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MicAudio {
+    pub mac: Address,
+    pub packet: Vec<u8>,
 }
 
 /// A command in a link's queue, and where its result goes.
@@ -1067,6 +1103,16 @@ pub struct Coordinator {
     /// `inner`'s write lock, as `speech` is, or alone; never held across an
     /// await.
     ears: std::sync::Mutex<Vec<mpsc::UnboundedSender<EarEvent>>>,
+    /// Where [`MicEvent`]s go - see [`Coordinator::mic_events`]. Taken under
+    /// `inner`'s write lock, as `speech` is, or alone; never held across an
+    /// await.
+    mic: std::sync::Mutex<Vec<mpsc::UnboundedSender<MicEvent>>>,
+    /// Where the microphone's audio goes - see [`Coordinator::mic_audio`].
+    /// Taken alone, by the read loop for each audio packet and to register,
+    /// never under `inner` and never across an await.
+    mic_audio: std::sync::Mutex<Option<mpsc::Sender<MicAudio>>>,
+    /// The audio packets dropped because their consumer had fallen behind.
+    mic_audio_dropped: std::sync::atomic::AtomicU64,
     /// Held across a save, so saves never overlap - they share a temporary
     /// file. Owned by the save while it runs - see
     /// `Coordinator::store_keys`.
@@ -1118,7 +1164,7 @@ impl Coordinator {
 
     /// [`Coordinator::new`] with the keystore given, so tests use their own
     /// directory rather than the user's.
-    fn with_keystore(keystore: Option<Keystore>) -> Arc<Self> {
+    pub(crate) fn with_keystore(keystore: Option<Keystore>) -> Arc<Self> {
         Arc::new(Self::from_keystore(keystore))
     }
 
@@ -1230,6 +1276,9 @@ impl Coordinator {
             resolved: std::sync::Mutex::default(),
             speech: std::sync::Mutex::default(),
             ears: std::sync::Mutex::default(),
+            mic: std::sync::Mutex::default(),
+            mic_audio: std::sync::Mutex::default(),
+            mic_audio_dropped: std::sync::atomic::AtomicU64::new(0),
             keystore: Arc::new(Mutex::new(persistence)),
             readings: Arc::new(Mutex::new(saved_readings)),
             updates,
@@ -1309,6 +1358,73 @@ impl Coordinator {
     /// The consumers of ear events - see `Coordinator::ears`.
     fn ear_consumers(&self) -> std::sync::MutexGuard<'_, Vec<mpsc::UnboundedSender<EarEvent>>> {
         self.ears.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Registers a consumer of every link coming up and going, and of the
+    /// pods' answers to the microphone's start and stop - see [`MicEvent`] -
+    /// from now on. A handful per stream, each queued. A consumer that is
+    /// dropped is forgotten at the next event.
+    pub fn mic_events(&self) -> mpsc::UnboundedReceiver<MicEvent> {
+        let (events, receiver) = mpsc::unbounded_channel();
+        self.mic_consumers().push(events);
+        receiver
+    }
+
+    /// Hands `event` to every consumer of [`Coordinator::mic_events`]. Called
+    /// under `inner`'s write lock, so the events go out in the order the
+    /// links changed.
+    fn tell_mic(&self, event: MicEvent) {
+        self.mic_consumers()
+            .retain(|consumer| consumer.send(event).is_ok());
+    }
+
+    /// The consumers of microphone events - see `Coordinator::mic`.
+    fn mic_consumers(&self) -> std::sync::MutexGuard<'_, Vec<mpsc::UnboundedSender<MicEvent>>> {
+        self.mic.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Registers the one consumer of the microphone's audio, in place of any
+    /// before it: every link's audio packets, some 33 a second while a
+    /// stream runs, at most `capacity` of them waiting. One that comes while
+    /// `capacity` are waiting is dropped and counted
+    /// ([`Coordinator::mic_audio_dropped`]): the read loop never waits for
+    /// the consumer, as the link's other packets come on the same loop.
+    pub fn mic_audio(&self, capacity: usize) -> mpsc::Receiver<MicAudio> {
+        let (audio, receiver) = mpsc::channel(capacity.max(1));
+        *self.mic_audio_consumer() = Some(audio);
+        receiver
+    }
+
+    /// How many audio packets were dropped since the app started, their
+    /// consumer behind.
+    pub fn mic_audio_dropped(&self) -> u64 {
+        self.mic_audio_dropped
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Hands an audio packet to the consumer of [`Coordinator::mic_audio`],
+    /// never waiting: dropped and counted when it is behind, dropped alone
+    /// when there is none.
+    fn hand_mic_audio(&self, mac: Address, packet: Vec<u8>) {
+        let mut consumer = self.mic_audio_consumer();
+        let Some(audio) = consumer.as_ref() else {
+            return;
+        };
+        match audio.try_send(MicAudio { mac, packet }) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.mic_audio_dropped
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => *consumer = None,
+        }
+    }
+
+    /// The consumer of the microphone's audio - see `Coordinator::mic_audio`.
+    fn mic_audio_consumer(&self) -> std::sync::MutexGuard<'_, Option<mpsc::Sender<MicAudio>>> {
+        self.mic_audio
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Replaces the snapshot every subscriber sees with one of `inner`.
@@ -1707,6 +1823,7 @@ impl Coordinator {
             // this lock too.
             self.tell_speech(SpeechEvent::LinkUp { mac: mac_addr });
             self.tell_ears(EarEvent::LinkUp { mac: mac_addr });
+            self.tell_mic(MicEvent::LinkUp { mac: mac_addr });
             self.broadcast(&inner);
             AapLink {
                 coordinator: self.clone(),
@@ -1778,6 +1895,7 @@ impl Coordinator {
                 // were told under this lock too.
                 self.tell_speech(SpeechEvent::LinkGone { mac: mac_addr });
                 self.tell_ears(EarEvent::LinkGone { mac: mac_addr });
+                self.tell_mic(MicEvent::LinkGone { mac: mac_addr });
             }
             // Without this the UI, tray, attachment and notifiers never hear
             // that the connection ended and keep showing the last AAP reading.
@@ -1814,6 +1932,13 @@ impl Coordinator {
                 Ok(p) => p,
                 Err(e) => return e,
             };
+
+            // Some 33 a second while the microphone runs: handed on whole,
+            // before anything is logged or decoded, and never waited for.
+            if aap::mic::is_audio_packet(&packet) {
+                self.hand_mic_audio(mac_addr, packet);
+                continue;
+            }
 
             // Redacted, as a key packet or the device information (`0x1D`,
             // serial numbers) may be among them: logs get pasted into issues.
@@ -1869,7 +1994,11 @@ impl Coordinator {
                 Ok(Message::DeviceInfo(info)) => {
                     self.handle_device_info(info, mac_addr, client).await;
                 }
-                Ok(Message::Unknown { .. }) => {}
+                Ok(Message::MicAnswer(answer)) => {
+                    self.handle_mic_answer(answer, mac_addr, client).await;
+                }
+                // Handed on above.
+                Ok(Message::MicAudio | Message::Unknown { .. }) => {}
                 Err(e) => tracing::warn!("AAP {e}"),
             }
         }
@@ -2154,8 +2283,28 @@ impl Coordinator {
         });
     }
 
+    /// Tells the pods' answer to the microphone's start or stop, while the
+    /// link is `client`'s.
+    async fn handle_mic_answer(
+        &self,
+        answer: aap::mic::Answer,
+        mac_addr: Address,
+        client: &Arc<aap::Client>,
+    ) {
+        tracing::info!("AAP microphone answer from {mac_addr}: {answer:?}");
+        let mut inner = self.inner.write().await;
+        if inner.live_link(mac_addr, client).is_none() {
+            return;
+        }
+        // Under the lock, as the link's going is told: never after it.
+        self.tell_mic(MicEvent::Answer {
+            mac: mac_addr,
+            answer,
+        });
+    }
+
     /// Sends a command to one device, over its AAP link, and resolves to how
-    /// it went: every command goes this way, the window's and the tray's, and
+    /// it went: every command goes this way - the window's, the tray's, the microphone task's - and
     /// every caller hears whether it was done (#54).
     ///
     /// The command takes its place in the link's queue here, in the call,
@@ -2242,6 +2391,18 @@ impl Coordinator {
                     .await
             }
             Command::Rename(name) => self.rename(mac_addr, client, name).await,
+            Command::Microphone(on) => {
+                client.set_microphone(on).await?;
+                tracing::info!(
+                    "Microphone of {mac_addr} {}",
+                    if on {
+                        "asked to start"
+                    } else {
+                        "asked to stop"
+                    }
+                );
+                Ok(())
+            }
         }
     }
 
@@ -2490,6 +2651,9 @@ mod tests {
             resolved: std::sync::Mutex::default(),
             speech: std::sync::Mutex::default(),
             ears: std::sync::Mutex::default(),
+            mic: std::sync::Mutex::default(),
+            mic_audio: std::sync::Mutex::default(),
+            mic_audio_dropped: std::sync::atomic::AtomicU64::new(0),
             keystore: Arc::new(Mutex::new(Persistence {
                 keystore: Some(keystore_in(&dir)),
                 saved: HashMap::new(),

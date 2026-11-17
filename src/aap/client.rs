@@ -36,7 +36,7 @@ use tokio::time::Instant;
 use tokio_seqpacket::UnixSeqpacket;
 use tracing::Instrument;
 
-use crate::aap::{battery, conversation, keys, name, noise};
+use crate::aap::{battery, conversation, keys, mic, name, noise};
 
 /// L2CAP Protocol/Service Multiplexer for AAP.
 pub(crate) const AAP_PSM: u16 = 0x1001; // 4097
@@ -400,6 +400,17 @@ impl Client {
             .await
     }
 
+    /// Starts the microphone's stream, or stops it, with LibrePods' packets,
+    /// which a Pro 3 answered (`docs/protocol/aap/microphone.md`). The
+    /// answer comes on the link like any packet.
+    pub async fn set_microphone(&self, on: bool) -> Result<()> {
+        if on {
+            self.send_packet(&mic::START, "microphone start").await
+        } else {
+            self.send_packet(&mic::STOP, "microphone stop").await
+        }
+    }
+
     /// Renames the pods: the name they give every host, not BlueZ's alias.
     ///
     /// Fire and forget: the pods answer nothing, and take the name at once -
@@ -417,6 +428,14 @@ impl Client {
     pub async fn rename_unchecked(&self, new_name: &[u8]) -> Result<()> {
         let packet = name::rename_packet_unchecked(new_name);
         self.send_packet(&packet, "rename").await
+    }
+
+    /// Sends `packet` as given, unchecked: for a probe to send a packet the
+    /// app has no command for, as `mic_probe` sends the microphone's start and
+    /// stop.
+    #[doc(hidden)]
+    pub async fn send_unchecked(&self, packet: &[u8]) -> Result<()> {
+        self.send_packet(packet, "packet").await
     }
 
     /// Sends a packet, verifying the whole thing was written.

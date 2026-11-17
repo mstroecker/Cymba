@@ -78,6 +78,10 @@ were `00 02 00 01` in every one seen (Pro 3, #150; AirPods 4, [noise-control.md]
 | `08` | Back to normal volume. |
 | `09` | Idle: the pods are back in the user's mode. |
 
+Level `0b` came once, between `03` and `04`, 4 s after the microphone was stopped
+over AAP (Pro 3, 2026-11-15, [microphone.md](microphone.md#run-3)). What it means is not
+known.
+
 A level is a target, not a step to count: the pods skip levels, and the ramp from `03`
 to `08` took under 100 ms (Pro 3, #150).
 
@@ -163,4 +167,5 @@ Ten `0x4B`s, all `08` or `09`, one pair per change; nothing else.
 - The setting changed on a phone while the pair is linked here: does a `0x28` report come?
 - Speech with nothing playing: are levels sent at all?
 - A mode set from the app during speech: what do the pods report, and which mode do they go back to?
+- What level `0b` means, and whether it comes without the microphone.
 - Pro 2 (USB-C): the setting and the levels, assumed to be as on the Pro 3.

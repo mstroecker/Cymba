@@ -6,14 +6,18 @@
 //! whose pause goes back to the scanner on a third - see `ScanControl`;
 //! commands go to the AirPods on their link's queue - see
 //! `Coordinator::command` - the switch for pausing on the ears to the media
-//! task on another watch, whether the user is at the desktop and the
-//! resumes from sleep to the nearby notifier on another, as one value, and
-//! the tray's window commands, the low battery and nearby notifications and
-//! a quit asked for by SIGTERM or SIGINT to the GTK main context on async
-//! channels.
+//! task on another watch, the microphone's switch to `mic::Mic` on another,
+//! and whether the microphone can be offered back to its Preferences row on
+//! another - see `MicControl::availability` - whether the user is at the
+//! desktop and the resumes from sleep to the nearby notifier on another, as
+//! one value, and the tray's window commands, the low battery and nearby
+//! notifications and a quit asked for by SIGTERM or SIGINT to the GTK main
+//! context on async channels. A third thread, PipeWire's, runs its loop for
+//! `mic::Mic`, which starts it, asks it things on a queue of its own woken by
+//! a pipe, and hears back on a tokio channel.
 
 use cymba::{
-    APP_ID, attachment, ble, indicator, media, migrate, nearby, notify, podstate, presence,
+    APP_ID, attachment, ble, indicator, media, mic, migrate, nearby, notify, podstate, presence,
     readings, settings, ui, volume,
 };
 
@@ -110,6 +114,9 @@ struct Primary {
     /// The pairs a connect is under way to, for the window's connect banner
     /// and spinner.
     connecting: ui::Connecting,
+    /// Whether the microphone can be offered, for its Preferences switch,
+    /// and what puts everything back as the app quits.
+    mic: mic::MicControl,
 }
 
 impl Primary {
@@ -156,6 +163,22 @@ impl Primary {
         );
         runtime.spawn(pausing.run());
         ui::add_pause_on_ear(app, settings.clone(), pause_on_ear);
+        // The microphone over AAP, while its Preferences switch is on - off
+        // unless turned on: PipeWire on a thread of its own once the switch
+        // is on, and with it off while the default input is still to be put
+        // back; BlueZ and the players for the card switch after a stop, each
+        // connected once needed.
+        let (mic_switch, mic_on) = tokio::sync::watch::channel(false);
+        let (offering, mic) = mic::Mic::new(
+            coordinator.clone(),
+            mic_on,
+            mic::missing(),
+            mic::start_audio(),
+            Box::new(zbus::connection::Builder::system),
+            Box::new(zbus::connection::Builder::session),
+        );
+        runtime.spawn(offering.run());
+        ui::add_mic(app, settings.clone(), mic_switch);
         // Connects a pair through BlueZ on the system bus, for the window's
         // connect banner and whatever else offers one.
         let connecting = ui::add_connect(app, runtime.clone());
@@ -189,6 +212,7 @@ impl Primary {
             volume,
             scan_control,
             connecting,
+            mic,
         }
     }
 
@@ -204,6 +228,7 @@ impl Primary {
             self.coordinator.clone(),
             self.scan_control.clone(),
             self.connecting.clone(),
+            self.mic.availability(),
         );
         *self.window.borrow_mut() = Some(win.clone());
 
@@ -342,6 +367,7 @@ fn main() -> glib::ExitCode {
     // A volume lowered while the user spoke is put back before the runtime
     // goes, which would take the task along with it - but not for longer
     // than a moment: a BlueZ that does not answer must not hold the quit up.
+    // So are the microphone's stream stopped and the default input put back.
     // The last readings are saved meanwhile, as they are, for the next run.
     // That is waited for, without a bound: a small file on the local disk, as
     // the keys are, and a bound would stop only the wait - the write runs on
@@ -349,17 +375,25 @@ fn main() -> glib::ExitCode {
     if let Some(primary) = primary.get() {
         let volume = primary.volume.clone();
         let coordinator = primary.coordinator.clone();
+        let mic = primary.mic.clone();
         // The timeout made inside the runtime, whose timer it needs.
-        let (restored, ()) = runtime.block_on(async move {
+        let (restored, (), shut_down) = runtime.block_on(async move {
             tokio::join!(
                 tokio::time::timeout(volume::RESTORE_LIMIT, volume.restore_all()),
                 coordinator.save_readings(std::time::Duration::ZERO),
+                tokio::time::timeout(mic::QUIT_LIMIT, mic.shut_down()),
             )
         });
         if restored.is_err() {
             tracing::warn!(
                 "gave up putting back the volume after {}s",
                 volume::RESTORE_LIMIT.as_secs()
+            );
+        }
+        if shut_down.is_err() {
+            tracing::warn!(
+                "gave up stopping the microphone and putting back the default input after {}s",
+                mic::QUIT_LIMIT.as_secs()
             );
         }
     }

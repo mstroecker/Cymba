@@ -6,15 +6,16 @@
 //! ear report (0x06), the primary pod (0x08), the 0x09 settings family - of
 //! which the noise control mode (sub-command 0x0D) and Conversation
 //! Awareness (0x28) are read - the proximity keys (0x31) and the speech
-//! level (0x4B), and the pods' name and firmware version in the device
-//! information packet (0x1D). Each parser checks what is its own beyond
-//! that.
+//! level (0x4B), the pods' name and firmware version in the device
+//! information packet (0x1D), and the microphone's answers and audio (0x58).
+//! Each parser checks what is its own beyond that.
 
 use crate::aap::battery::{self, BatteryInfo, BatteryParseError};
 use crate::aap::conversation::{self, ConversationParseError};
 use crate::aap::ear::{self, EarReport};
 use crate::aap::info::{self, DeviceInfo};
 use crate::aap::keys::{self, KeyParseError, ProximityKey};
+use crate::aap::mic::{self, Answer};
 use crate::aap::noise::{self, NoiseMode, NoiseParseError};
 use crate::ble::parser::PodSide;
 
@@ -64,6 +65,11 @@ pub enum Message {
     /// carries the new name. Each field is read on its own, and carries its
     /// own error: the packet as a whole does not fail.
     DeviceInfo(DeviceInfo),
+    /// The pods' answer to the microphone's start or stop.
+    MicAnswer(Answer),
+    /// Audio from the microphone, some 33 packets a second while it runs:
+    /// the packet itself is the caller's, for [`mic::access_units`].
+    MicAudio,
     /// Anything else: another opcode, another setting of the 0x09 family, or
     /// one of the opcodes above too short to be what it names. `None` for a
     /// packet without the [`HEADER`].
@@ -107,6 +113,10 @@ pub fn decode(packet: &[u8]) -> Result<Message, DecodeError> {
         }
         keys::OPCODE if keys::is_key_packet(packet) => Message::Keys(keys::read(packet)?),
         info::OPCODE if info::is_info_packet(packet) => Message::DeviceInfo(info::read(packet)),
+        mic::OPCODE if mic::is_audio_packet(packet) => Message::MicAudio,
+        mic::OPCODE if mic::is_control_packet(packet) => {
+            Message::MicAnswer(mic::read_answer(packet))
+        }
         _ => Message::Unknown {
             opcode: Some(opcode),
         },
@@ -215,6 +225,20 @@ mod tests {
         );
     }
 
+    /// The microphone's answers, and its audio, by bytes 6-7.
+    #[test]
+    fn decodes_the_microphone() {
+        assert_eq!(
+            decode(&mic::answer_packet(false)),
+            Ok(Message::MicAnswer(Answer::Started))
+        );
+        assert_eq!(
+            decode(&mic::answer_packet(true)),
+            Ok(Message::MicAnswer(Answer::Stopped))
+        );
+        assert_eq!(decode(&mic::audio_packet(0, &[])), Ok(Message::MicAudio));
+    }
+
     /// A field that does not read is the field's error, not the packet's:
     /// the other field comes through.
     #[test]
@@ -273,7 +297,8 @@ mod tests {
     /// What the app has no use for is passed over, by its opcode: the startup
     /// dump's other settings, a 0x4B shaped otherwise than a speech level, a
     /// 0x1D shaped otherwise than the device information, the list of known
-    /// hosts that comes with the handshake's answer.
+    /// hosts that comes with the handshake's answer, a 0x58 that is neither
+    /// audio nor control.
     #[test]
     fn other_packets_are_unknown() {
         let mut other_4b = conversation::level_packet(0x09);
@@ -282,13 +307,16 @@ mod tests {
         other_1d[6] = 0x01;
         let mut other_1d_start = info::info_packet("Pods", &["A0000"]);
         other_1d_start[9] = 0x05;
-        let others: [(&[u8], u8); 6] = [
+        let mut other_58 = mic::audio_packet(0, &[]);
+        other_58[6] = 0x02;
+        let others: [(&[u8], u8); 7] = [
             (&noise::settings_report(0x1F, &[0x50, 0x50]), 0x09),
             (&noise::allow_off_packet(true), 0x09),
             (&other_4b, 0x4B),
             (&other_1d, 0x1D),
             (&other_1d_start, 0x1D),
             (&[0x04, 0x00, 0x04, 0x00, 0x2B, 0x00], 0x2B),
+            (&other_58, 0x58),
         ];
         for (packet, opcode) in others {
             assert_eq!(
